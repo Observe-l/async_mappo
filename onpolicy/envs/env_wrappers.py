@@ -7,7 +7,7 @@ import multiprocessing as mp
 from multiprocessing import Process, Pipe
 from abc import ABC, abstractmethod
 from onpolicy.utils.util import tile_images
-from icecream import ic
+# from icecream import ic
 
 
 class CloudpickleWrapper(object):

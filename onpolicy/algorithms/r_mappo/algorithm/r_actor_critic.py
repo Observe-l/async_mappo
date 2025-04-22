@@ -31,12 +31,17 @@ class R_Actor(nn.Module):
 
         obs_shape = get_shape_from_obs_space(obs_space)
 
-        if 'Dict' in obs_shape.__class__.__name__:
-            self._mixed_obs = True
-            self.base = MIXBase(args, obs_shape, cnn_layers_params=args.cnn_layers_params)
-        else:
-            self._mixed_obs = False
-            self.base = CNNBase(args, obs_shape) if len(obs_shape)==3 else MLPBase(args, obs_shape, use_attn_internal=args.use_attn_internal, use_cat_self=True)
+        # if 'Dict' in obs_shape.__class__.__name__:
+        #     self._mixed_obs = True
+        #     self.base = MIXBase(args, obs_shape, cnn_layers_params=args.cnn_layers_params)
+        # else:
+        #     self._mixed_obs = False
+        #     self.base = CNNBase(args, obs_shape) if len(obs_shape)==3 else MLPBase(args, obs_shape, use_attn_internal=args.use_attn_internal, use_cat_self=True)
+        
+        '''Custom configuration'''
+        self._mixed_obs = False
+        obs_shape = obs_shape["global_obs"].shape
+        self.base = CNNBase(args, obs_shape) if len(obs_shape)==3 else MLPBase(args, obs_shape, use_attn_internal=args.use_attn_internal, use_cat_self=True)
         
         input_size = self.base.output_size
 
@@ -142,12 +147,17 @@ class R_Critic(nn.Module):
 
         share_obs_shape = get_shape_from_obs_space(share_obs_space)
 
-        if 'Dict' in share_obs_shape.__class__.__name__:
-            self._mixed_obs = True
-            self.base = MIXBase(args, share_obs_shape, cnn_layers_params=args.cnn_layers_params)
-        else:
-            self._mixed_obs = False
-            self.base = CNNBase(args, share_obs_shape) if len(share_obs_shape)==3 else MLPBase(args, share_obs_shape, use_attn_internal=True, use_cat_self=args.use_cat_self)
+        # if 'Dict' in share_obs_shape.__class__.__name__:
+        #     self._mixed_obs = True
+        #     self.base = MIXBase(args, share_obs_shape, cnn_layers_params=args.cnn_layers_params)
+        # else:
+        #     self._mixed_obs = False
+        #     self.base = CNNBase(args, share_obs_shape) if len(share_obs_shape)==3 else MLPBase(args, share_obs_shape, use_attn_internal=True, use_cat_self=args.use_cat_self)
+        
+        '''Custom configuration'''
+        self._mixed_obs = False
+        share_obs_shape = share_obs_shape["global_obs"].shape
+        self.base = CNNBase(args, share_obs_shape) if len(share_obs_shape)==3 else MLPBase(args, share_obs_shape, use_attn_internal=True, use_cat_self=args.use_cat_self)
 
         input_size = self.base.output_size
 

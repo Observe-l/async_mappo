@@ -7,7 +7,7 @@ from onpolicy.algorithms.utils.invariant import AlterEncoder
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 from .util import init
-from icecream import ic
+# from icecream import ic
 
 class Flatten(nn.Module):
     def forward(self, x):
@@ -21,10 +21,11 @@ class MIXBase(nn.Module):
         self._activation_id = args.activation_id
         self._use_maxpool2d = args.use_maxpool2d
         self.hidden_size = args.hidden_size
-        self.grid_goal = args.grid_goal
+        # self.grid_goal = args.grid_goal
+        self.grid_goal = False
         self.goal_grid_size = args.goal_grid_size
         self.use_stack = args.use_stack
-        self.grid_size  = args.grid_size
+        # self.grid_size  = args.grid_size
         self.num_agents  = args.num_agents
         self.depth = args.attn_depth
         self.cnn_keys = []
@@ -86,7 +87,8 @@ class MIXBase(nn.Module):
         if len(self.mlp_keys) > 0:
             mlp_input = self._build_mlp_input(x)
             mlp_x = self.mlp(mlp_input).view(mlp_input.size(0), -1)
-            out_x = torch.cat([out_x, mlp_x], dim=1) # ! wrong
+            # out_x = torch.cat([out_x, mlp_x], dim=1) # ! wrong
+            out_x = mlp_x
 
         return out_x
 
