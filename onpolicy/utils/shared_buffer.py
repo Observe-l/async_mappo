@@ -620,3 +620,29 @@ class SharedReplayBuffer(object):
             adv_targ = _flatten(L, N, adv_targ)
 
             yield share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch, value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch, adv_targ, available_actions_batch
+
+    def reset_buffer(self):
+        self.step = 0
+        self.update_step = np.zeros((self.n_rollout_threads, self.num_agents, 1), dtype=np.int32)
+        if self._mixed_obs:
+            for key in self.share_obs.keys():
+                self.share_obs[key].fill(0)
+            for key in self.obs.keys():
+                self.obs[key].fill(0)
+        else:
+            self.share_obs.fill(0)
+            self.obs.fill(0)
+        self.rnn_states.fill(0)
+        self.rnn_states_critic.fill(0)
+        self.value_preds.fill(0)
+        self.returns.fill(0)
+        if self.available_actions is not None:
+            self.available_actions.fill(1)
+        self.actions.fill(0)
+        self.action_log_probs.fill(0)
+        self.rewards.fill(0)
+        self.masks.fill(1)
+        if self.bad_masks is not None:
+            self.bad_masks.fill(1)
+        if self.active_masks is not None:
+            self.active_masks.fill(1)

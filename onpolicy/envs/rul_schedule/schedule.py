@@ -75,17 +75,13 @@ class async_scheduling(object):
         
         # Get observation, reward. record the result
         obs = self._get_obs()
-        # rewards_dict = self._get_reward(action_dict)
-        # rewards_dict.update({tmp_key:-50 for tmp_key in self.invalid})
-        # rewards = np.zeros((self.truck_num,1))
-        # for rew_id, rew in rewards_dict.items():
-        #     rewards[int(rew_id),0] = rew
+
         rewards = self._get_reward()
         # Reset all indicator
         self.flag_reset()
         # Save the results
         self.save_results(self.episode_len, step_length, action_dict, rewards)
-        if self.episode_len >= 7 * 24 *3600:
+        if self.episode_len >= 30 * 24 *3600:
             self.done = np.array([True for _ in range(self.truck_num)])
         return obs, rewards, self.done, {}
 
@@ -159,10 +155,6 @@ class async_scheduling(object):
             if agent_id in self.invalid:
                 rew[agent_id, 0] = -50
             tmp_truck.cumulate_reward += rew[agent_id, 0]
-
-        # for agent_id in action_dict.keys():
-        #     tmp_truck = self.truck_agents[agent_id]
-        #     rew[agent_id] = self._single_reward(tmp_truck)
         return rew
 
     def _single_reward(self, agent:Truck):
@@ -305,22 +297,19 @@ class async_scheduling(object):
                     # Write result to result file
                     # tmp_agent.cumulate_reward += rewards[agent_id,0]
                     agent_list += [action_dict[agent_id], rewards[agent_id,0], tmp_agent.cumulate_reward]
-                    # Write result to debug file
-                    debug_file = self.debug_files_path + f'{tmp_agent.id}.csv'
-                    with open(debug_file, 'a') as f:
-                        f_csv_d = writer(f)
-                        debug_list = [current_time, tmp_agent.position, tmp_agent.weight, tmp_agent.product, tmp_agent.destination, tmp_agent.driving_distance, tmp_agent.total_distance, tmp_agent.rul]
-                        f_csv_d.writerow(debug_list)
                 else:
                     agent_list += ['NA', 'NA', tmp_agent.cumulate_reward]
                 
-                if tmp_agent.state == 'repair' or tmp_agent.state == 'maintain':
-                    debug_file = self.debug_files_path + f'{tmp_agent.id}.csv'
-                    with open(debug_file, 'a') as f:
-                        f_csv_d = writer(f)
-                        debug_list = [current_time, tmp_agent.position, tmp_agent.weight, tmp_agent.product, tmp_agent.state, tmp_agent.driving_distance, tmp_agent.total_distance, tmp_agent.rul]
-                        f_csv_d.writerow(debug_list)
             f_csv.writerow(agent_list)
+        
+        # Write result to debug file
+        for tmp_agent in self.truck_agents:
+            debug_file = self.debug_files_path + f'{tmp_agent.id}.csv'
+            with open(debug_file, 'a') as f:
+                f_csv_d = writer(f)
+                position, destination = tmp_agent.route.split('_to_')
+                debug_list = [current_time, position, tmp_agent.weight, tmp_agent.product, destination, tmp_agent.driving_distance, tmp_agent.total_distance, tmp_agent.rul]
+                f_csv_d.writerow(debug_list)
         
         with open(self.distance_file, 'a') as f:
             f_csv = writer(f)

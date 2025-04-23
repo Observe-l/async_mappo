@@ -13,7 +13,7 @@ from onpolicy.config import get_config
 
 # from onpolicy.envs.gridworld.GridWorld_Env import GridWorldEnv
 from onpolicy.envs.rul_schedule.schedule import async_scheduling
-from onpolicy.envs.env_wrappers import DummyVecEnv
+from onpolicy.envs.env_wrappers import ScheduleEnv
 
 def make_train_env(all_args):
     def get_env_fn(rank):
@@ -22,7 +22,7 @@ def make_train_env(all_args):
             return env
         return init_env
 
-    return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+    return ScheduleEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
 def make_eval_env(all_args):
@@ -32,14 +32,14 @@ def make_eval_env(all_args):
             return env
         return init_env
 
-    return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+    return ScheduleEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str, default='rul_schedule', help="Which scenario to run on")
     parser.add_argument('--num_agents', type=int, default=12, help="number of trucks")
     parser.add_argument('--num_factory', type=int, default=50, help="number of factories")
-    parser.add_argument('--max_steps', type=int, default=200, help="depth the agent can view")
+    parser.add_argument('--max_steps', type=int, default=800, help="Max step of each episode and max env step")
     parser.add_argument("--use_single_reward", action='store_true', default=False,
                         help="use single reward")
     parser.add_argument("--use_complete_reward", action='store_true', default=True,
@@ -82,7 +82,7 @@ def parse_args(args, parser):
     parser.add_argument('--use_agent_obstacle',action='store_true', default=False)
     # eval by time step
     parser.add_argument('--use_time', default=False, action='store_true')
-    parser.add_argument('--max_timestep', default=200., type=float)
+    # parser.add_argument('--max_timestep', default=200., type=float)
     # grid goal
     parser.add_argument('--grid_goal', default = False, action='store_true')
     parser.add_argument('--goal_grid_size', default=4, type=int)
@@ -130,17 +130,12 @@ def main(args):
 
     # wandb
     if all_args.use_wandb:
+        wandb.login()
         run = wandb.init(config=all_args,
-                         project=all_args.env_name,
-                         entity=all_args.wandb_name,
-                         notes=socket.gethostname(),
+                         project="async-RUL",
                          name=str(all_args.algorithm_name) + "_" +
-                         str(all_args.experiment_name) +
-                         "_seed" + str(all_args.seed),
-                         group=all_args.scenario_name,
-                         dir=str(run_dir),
-                         job_type="training",
-                         reinit=True)
+                         str(all_args.experiment_name),
+                         job_type="training")
     else:
         if not run_dir.exists():
             curr_run = 'run1'

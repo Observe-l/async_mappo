@@ -18,17 +18,16 @@ class ScheduleRunner(Runner):
         self.async_control = AsyncControl(num_envs=self.n_rollout_threads,num_agents=self.num_agents)
     
     def run(self):
-        values, actions, action_log_probs, rnn_states, rnn_states_critic, action_env = self.warmup()
-
         start = time.time()
         episodes = int(self.num_env_steps) // self.max_steps // self.n_rollout_threads
         for episode in range(episodes):
+            values, actions, action_log_probs, rnn_states, rnn_states_critic, action_env = self.warmup()
             self.async_control.reset()
             period_rewards = np.zeros((self.n_rollout_threads, self.num_agents, 1))
             if self.use_linear_lr_decay:
                 self.trainer.policy.lr_decay(episode, episodes)
             
-            for epi_step in range(self.max_steps*self.num_agents):
+            for epi_step in range(self.max_steps):
                 # Environment step
                 dict_obs, rewards, dones, infos = self.envs.step(action_env)
                 # Sum up the reward
@@ -54,8 +53,19 @@ class ScheduleRunner(Runner):
                     rnn_states[active_mask] = par_rnn_states
                     rnn_states_critic[active_mask] = par_rnn_states_critic
                 
+                '''
+                If the envrionment return back done or buffer is full, start a new episode and reset the buffer
+                '''
+                done_flag = False
+                for env_done in dones:
+                    if 'bool' in env_done.__class__.__name__:
+                        if env_done:
+                            done_flag = True
+                    else:
+                        if np.all(env_done):
+                            done_flag = True
                 max_step = np.max(self.async_control.cnt)
-                if max_step >= self.max_steps:
+                if (max_step >= self.max_steps) or done_flag:
                     break
             
             self.buffer.update_mask(self.async_control.cnt)
@@ -78,10 +88,13 @@ class ScheduleRunner(Runner):
                               self.num_env_steps,
                               int(total_num_steps / (end - start))))
                 train_infos["average_episode_rewards"] = np.mean(self.buffer.rewards) * self.episode_length
+                if self.use_wandb:
+                    wandb.log({"average_episode_rewards": train_infos["average_episode_rewards"]})
                 print("average episode rewards is {}".format(train_infos["average_episode_rewards"]))
                 
 
     def warmup(self):
+        self.buffer.reset_buffer()
         dict_obs = self.envs.reset() # shape = [num_envs, num_agents, obs_shape]
         # Store the obs for all agents 1 step to update the share_obs
         self.obs_buf = np.zeros((self.n_rollout_threads, self.num_agents, len(dict_obs[0][0])))
@@ -213,4 +226,3 @@ class ScheduleRunner(Runner):
         obs, share_obs = self._convert(dict_obs)
 
         self.buffer.async_insert(share_obs, obs, rnn_states, rnn_states_critic, actions, action_log_probs, values, rewards, masks, active_agents=active_agents)
-        
