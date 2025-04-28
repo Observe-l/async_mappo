@@ -27,7 +27,7 @@ class ScheduleRunner(Runner):
             if self.use_linear_lr_decay:
                 self.trainer.policy.lr_decay(episode, episodes)
             
-            for epi_step in range(self.max_steps):
+            while True:
                 # Environment step
                 dict_obs, rewards, dones, infos = self.envs.step(action_env)
                 # Sum up the reward
