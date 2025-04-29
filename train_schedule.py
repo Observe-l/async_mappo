@@ -92,8 +92,9 @@ def parse_args(args, parser):
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
 
     # RUL prediction
-    parser.add_argument('--use_rul_agent', default = True, action='store_true', help="Use agent to predict RUL")
+    parser.add_argument('--use_rul_agent', default = False, action='store_true', help="Use agent to predict RUL")
     parser.add_argument('--rul_threshold', default = 7, type=float, help="RUL threshold, if 0, use RL to predict RUL")
+    parser.add_argument('--exp_type', type=str, default='rul', help="experiment name")
 
     all_args = parser.parse_known_args(args)[0]
 

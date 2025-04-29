@@ -42,7 +42,7 @@ class async_scheduling(object):
         random_string = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
         # Create path with current date
         current_date = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-        self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/rul_threshold/async_mappo/{current_date}/exp_{random_string}"
+        self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/{args.exp_type}/async_mappo/{current_date}/exp_{random_string}"
         Path(self.path).mkdir(parents=True, exist_ok=True)
         
     
