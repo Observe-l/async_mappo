@@ -83,15 +83,17 @@ def parse_args(args, parser):
     # eval by time step
     parser.add_argument('--use_time', default=False, action='store_true')
     # parser.add_argument('--max_timestep', default=200., type=float)
-    # grid goal
     parser.add_argument('--grid_goal', default = False, action='store_true')
     parser.add_argument('--goal_grid_size', default=4, type=int)
     parser.add_argument('--cnn_trans_layer', type=str, default='1,3,1,1')
     parser.add_argument('--attn_depth', type=int, default=2, help="""attn_depth""")
     parser.add_argument('--use_stack', default = False, action='store_true')
     parser.add_argument('--astar_cost_mode', default = 'normal', choices = ['normal', 'utility'])
-
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
+
+    # RUL prediction
+    parser.add_argument('--use_rul_agent', default = True, action='store_true', help="Use agent to predict RUL")
+    parser.add_argument('--rul_threshold', default = 7, type=float, help="RUL threshold, if 0, use RL to predict RUL")
 
     all_args = parser.parse_known_args(args)[0]
 

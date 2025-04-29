@@ -14,6 +14,8 @@ class async_scheduling(object):
     def __init__(self, args):
         self.truck_num = args.num_agents
         self.factory_num = args.num_factory
+        self.use_rul_agent = args.use_rul_agent
+        self.rul_threshold = args.rul_threshold
 
         self.init_env()
         obs_space = {}
@@ -29,18 +31,18 @@ class async_scheduling(object):
             obs_space["global_obs"] = Box(low=-1, high=30000, shape=(obs_dim,))
             self.observation_space.append(Dict(obs_space))
             # self.observation_space[agent_id] = Box(low=-1, high=30000, shape=(obs_dim,))
-            self.action_space[agent_id] = Discrete(self.factory_num+1)
+            if self.use_rul_agent:
+                self.action_space[agent_id] = Discrete(self.factory_num)
+            else:
+                self.action_space[agent_id] = Discrete(self.factory_num+1)
         share_obs_space["global_obs"] = Box(low=-1, high=30000, shape=(share_obs_dim,))
         self.share_observation_space = [Dict(share_obs_space) for _ in range(self.truck_num)]
                                             
-        # self.share_observation_space = [Box(low=-np.inf, high=+np.inf, shape=(share_obs_dim,), dtype=np.float32) for _ in range(self.truck_num)]
-        # self.done = []
         self.episode_num = 0
         random_string = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
-        # self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/rul/{env_config['algo']}/exp_{random_string}"
         # Create path with current date
         current_date = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-        self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/rul/async_mappo/{current_date}/exp_{random_string}"
+        self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/rul_threshold/async_mappo/{current_date}/exp_{random_string}"
         Path(self.path).mkdir(parents=True, exist_ok=True)
         
     
@@ -60,18 +62,25 @@ class async_scheduling(object):
     def step(self, action_dict:dict):
         # Set action
         self._set_action(action_dict)
+        self.record_debug(self.episode_len, action_dict)
         # Run the sumo until any of the agents are avaiable
         sumo_flag = True
         step_length = 0
         while sumo_flag:
-            # [tmp_truck.truck_step() for tmp_truck in self.truck_agents]
             self.producer.produce_step()
-            # sumo_flag = any([tmp_truck.operable_flag for tmp_truck in self.truck_agents])
-            sumo_flag = not any([tmp_truck.operable_flag for tmp_truck in self.truck_agents])
+            # sumo_flag = not any([tmp_truck.operable_flag for tmp_truck in self.truck_agents])
             step_length += 1
             self.episode_len += 1
-            # if not sumo_flag:
-            #     print(f"Step length: {step_length}, Sumo flag: {sumo_flag}")
+            for tmp_truck in self.truck_agents:
+                if tmp_truck.operable_flag:
+                    tmp_truck.rul = self.predictor.predict(tmp_truck.eng_obs)
+                    if self.use_rul_agent and tmp_truck.rul < self.rul_threshold:
+                        tmp_truck.maintain()
+                        # Record when make maintain
+                        maintain_dict = {int(tmp_truck.id.split('_')[1]): self.factory_num}
+                        self.record_debug(self.episode_len, maintain_dict)
+                    else:
+                        sumo_flag = False
         
         # Get observation, reward. record the result
         obs = self._get_obs()
@@ -91,13 +100,15 @@ class async_scheduling(object):
         for agent_id, action in action_dict.items():
             tmp_truck = self.truck_agents[int(agent_id)]
             # Matain the truck
-            if action == 50:
+            if action == int(self.factory_num):
                 tmp_truck.maintain()
             else:
                 target_id = f"Factory{action}"
                 # Invalid action
                 if target_id == tmp_truck.position:
                     self.invalid.append(agent_id)
+                    # Waiting action: wait for 2 minutes
+                    tmp_truck.waiting(60*2)
                 else:
                     tmp_truck.delivery(destination=target_id)
 
@@ -131,10 +142,7 @@ class async_scheduling(object):
             # The transported product
             product = tmp_truck.get_truck_product()
             agent_id = int(tmp_truck.id.split('_')[1])
-            # Get RUL from truck's sensor reading
-            rul = self.predictor.predict(tmp_truck.eng_obs)
-            tmp_truck.rul = rul
-            observation[agent_id] = np.concatenate([[rul]]+[queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
+            observation[agent_id] = np.concatenate([[tmp_truck.rul]]+[queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
         return observation
     
     def _get_reward(self):
@@ -152,8 +160,8 @@ class async_scheduling(object):
                 elif tmp_truck.recover_flag == 2:
                     rew[agent_id, 0] = -50
                     tmp_truck.recover_flag = 0
-            if agent_id in self.invalid:
-                rew[agent_id, 0] = -50
+            # if agent_id in self.invalid:
+            #     rew[agent_id, 0] = -50
             tmp_truck.cumulate_reward += rew[agent_id, 0]
         return rew
 
@@ -302,15 +310,6 @@ class async_scheduling(object):
                 
             f_csv.writerow(agent_list)
         
-        # Write result to debug file
-        for tmp_agent in self.truck_agents:
-            debug_file = self.debug_files_path + f'{tmp_agent.id}.csv'
-            with open(debug_file, 'a') as f:
-                f_csv_d = writer(f)
-                position, destination = tmp_agent.route.split('_to_')
-                debug_list = [current_time, position, tmp_agent.weight, tmp_agent.product, destination, tmp_agent.driving_distance, tmp_agent.total_distance, tmp_agent.rul]
-                f_csv_d.writerow(debug_list)
-        
         with open(self.distance_file, 'a') as f:
             f_csv = writer(f)
             distance_list = [current_time]
@@ -337,3 +336,22 @@ class async_scheduling(object):
             truck_state_list += [normal_num, broken_num, maintain_num]
             truck_state_list += [broken_id, maintain_id]
             f_csv.writerow(truck_state_list)
+
+    def record_debug(self, time, action_dict):
+        '''Record the debug information'''
+        current_time = round(time/3600,3)
+        for agent_id, action in action_dict.items():
+            tmp_agent = self.truck_agents[int(agent_id)]
+            debug_file = self.debug_files_path + f'{tmp_agent.id}.csv'
+            position = tmp_agent.position
+            destination = tmp_agent.destination
+            if int(agent_id) in self.invalid:
+                destination = "Waiting"
+            elif tmp_agent.state == 'repair':
+                destination = "Repair"
+            elif tmp_agent.state == 'maintain':
+                destination = "Maintain"
+            with open(debug_file, 'a') as f:
+                f_csv = writer(f)
+                debug_list = [current_time, position, tmp_agent.weight, tmp_agent.product, destination, tmp_agent.driving_distance, tmp_agent.total_distance, tmp_agent.rul]
+                f_csv.writerow(debug_list)

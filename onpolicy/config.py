@@ -186,7 +186,7 @@ def get_config():
     parser.add_argument("--algorithm_name", type=str,
                         default='mappo', choices=["rmappo", "mappo", "rmappg", "mappg", "ft_rrt", "ft_nearest", "ft_apf", "ft_utility", "ft_voronoi"])
 
-    parser.add_argument("--experiment_name", type=str, default="async_schedule", help="an identifier to distinguish different experiment.")
+    parser.add_argument("--experiment_name", type=str, default="rul_threshold", help="an identifier to distinguish different experiment.")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")
     parser.add_argument("--cuda", action='store_false', default=True, help="by default True, will use GPU to train; or else will use CPU;")
     parser.add_argument("--cuda_deterministic",

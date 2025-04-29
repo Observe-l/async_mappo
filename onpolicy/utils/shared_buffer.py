@@ -31,7 +31,7 @@ class SharedReplayBuffer(object):
         share_obs_shape = get_shape_from_obs_space(share_obs_space)
 
         # for mixed observation
-        if 'Dict' in obs_shape.__class__.__name__:
+        if 'dict' in obs_shape.__class__.__name__:
             self._mixed_obs = True
             
             self.obs = {}

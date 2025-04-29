@@ -108,8 +108,11 @@ class Truck(object):
         '''
         # Update the waiting time of the truck in the waiting state
         if self.state == 'waiting':
-            self.waiting_time += 1
-            self.operable_flag = True
+            if self.waiting_time > 0:
+                self.waiting_time -= 1
+            else:
+                self.waiting_time = 0
+                self.operable_flag = True
         # Check the truck in the loading state load the goods or not
         # If loaded, change the state to waiting
         elif self.state == 'loading':
@@ -179,11 +182,7 @@ class Truck(object):
         Unload goods
         '''
         self.weight = 0
-        self.state = 'loading'        # Random select a position at the begining
-        self.route = random.choice(list(self.map_distance.keys()))
-        self.position, self.destination = self.route.split('_to_')
-        self.travel_time = self.map_time[self.route]
-        self.travel_distance = self.map_distance[self.route]
+        self.state = 'loading'
         self.load_time = load_time
         self.product = None
         self.operable_flag = False
@@ -220,3 +219,11 @@ class Truck(object):
         self.matainance_flag = True
         self.recover_time = 0
         self.recover_flag = 1
+    
+    def waiting(self, waiting_time:int) -> None:
+        '''
+        Set the truck to waiting state
+        '''
+        self.state = 'waiting'
+        self.waiting_time = waiting_time
+        self.operable_flag = False
