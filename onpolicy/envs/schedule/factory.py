@@ -1,4 +1,4 @@
-from onpolicy.envs.rul_schedule.truck import Truck
+from onpolicy.envs.schedule.truck import Truck
 
 class Factory(object):
     def __init__(self, factory_id:str = 'Factory0',\

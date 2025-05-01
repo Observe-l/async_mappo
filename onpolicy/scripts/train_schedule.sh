@@ -1,1 +1,1 @@
-python3 train_schedule.py --max_steps 1000 --use_recurrent_policy --recurrent_N 6 --exp_type schedule --experiment_name penalty_7days --scenario_name schedule --env_name async_schedule
+python3 train_schedule.py --max_steps 1000 --use_recurrent_policy --recurrent_N 6 --exp_type schedule_random --experiment_name random_des --scenario_name schedule --env_name async_schedule
