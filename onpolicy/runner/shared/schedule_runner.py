@@ -16,6 +16,7 @@ class ScheduleRunner(Runner):
         super(ScheduleRunner, self).__init__(config)
         self.max_steps = self.all_args.max_steps
         self.async_control = AsyncControl(num_envs=self.n_rollout_threads,num_agents=self.num_agents)
+        self.max_rewards = 0
     
     def run(self):
         start = time.time()
@@ -73,8 +74,7 @@ class ScheduleRunner(Runner):
             train_infos = self.train()
 
             total_num_steps = (episode + 1) * self.max_steps * self.n_rollout_threads
-            if (episode % self.save_interval == 0 or episode == episodes - 1):
-                self.save()
+
             
             if episode % self.log_interval == 0:
                 end = time.time()
@@ -91,6 +91,12 @@ class ScheduleRunner(Runner):
                 if self.use_wandb:
                     wandb.log({"average_episode_rewards": train_infos["average_episode_rewards"]})
                 print("average episode rewards is {}".format(train_infos["average_episode_rewards"]))
+
+            # train_infos["average_episode_rewards"] = np.mean(self.buffer.rewards) * self.episode_length
+            if (episode % self.save_interval == 0 or episode == episodes - 1) and train_infos["average_episode_rewards"] > self.max_rewards:
+                self.save()
+                self.max_rewards = train_infos["average_episode_rewards"]
+                print("Save the model at episode {} with average rewards {}".format(episode, self.max_rewards))
                 
 
     def warmup(self):

@@ -49,6 +49,7 @@ class async_scheduling(object):
         self.episode_len = 0
         self.invalid = {truck_id: False for truck_id in range(self.truck_num)}
         self.waiting_tag = {truck_id: False for truck_id in range(self.truck_num)}
+        self.info = {'early_termination': False}
         self.done = np.array([False for _ in range(self.truck_num)])
         return obs
 
@@ -63,21 +64,22 @@ class async_scheduling(object):
             sumo_flag = not any([tmp_truck.operable_flag for tmp_truck in self.truck_agents])
             step_length += 1
             self.episode_len += 1
+        # Early termination, After 7 days, if any of the products are not produced, terminate the episode, give a penalty of -10
+        if self.episode_len >= 7 * 24 *3600 and self.early_termination():
+            self.info = {'early_termination': True}
+        else:
+            self.info = {'early_termination': False}
         # Get observation, reward. record the result
         obs = self._get_obs()
-
         rewards = self._get_reward()
         # Save the results
         self.save_results(self.episode_len, step_length, action_dict, rewards)
-        # Early termination, After 7 days, if any of the products are not produced, terminate the episode, give a penalty of -5000
-        if self.episode_len >= 7 * 24 *3600 and self.early_termination():
-            self.done = np.array([True for _ in range(self.truck_num)])
-            rewards = -5000 * np.ones((self.truck_num,1))
+
         # Episode boundary
         if self.episode_len >= 30 * 24 *3600:
             self.done = np.array([True for _ in range(self.truck_num)])
 
-        return obs, rewards, self.done, {}
+        return obs, rewards, self.done, self.info
 
     
     def _set_action(self, action_dict:dict):
@@ -134,6 +136,8 @@ class async_scheduling(object):
             agent_id = int(tmp_truck.id.split('_')[1])
             if tmp_truck.operable_flag:
                 rew[agent_id, 0] = self._single_reward(tmp_truck)
+                if self.info['early_termination']:
+                    rew[agent_id, 0] = -10
                 if self.invalid[agent_id]:
                     # rew[agent_id, 0] = -10
                     self.invalid[agent_id] = False
