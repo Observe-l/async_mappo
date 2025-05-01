@@ -12,12 +12,16 @@ import torch
 from onpolicy.config import get_config
 
 # from onpolicy.envs.gridworld.GridWorld_Env import GridWorldEnv
-from onpolicy.envs.rul_schedule.schedule import async_scheduling
+
 from onpolicy.envs.env_wrappers import ScheduleEnv
 
 def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
+            if all_args.rul_schedule:
+                from onpolicy.envs.rul_schedule.schedule import async_scheduling
+            else:
+                from onpolicy.envs.schedule.schedule import async_scheduling
             env = async_scheduling(all_args)
             return env
         return init_env
@@ -28,6 +32,10 @@ def make_train_env(all_args):
 def make_eval_env(all_args):
     def get_env_fn(rank):
         def init_env():
+            if all_args.rul_schedule:
+                from onpolicy.envs.rul_schedule.schedule import async_scheduling
+            else:
+                from onpolicy.envs.schedule.schedule import async_scheduling
             env = async_scheduling(all_args)
             return env
         return init_env
@@ -91,6 +99,9 @@ def parse_args(args, parser):
     parser.add_argument('--astar_cost_mode', default = 'normal', choices = ['normal', 'utility'])
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
 
+    # Normal scheduling or RUL scheduling
+    parser.add_argument('--rul_schedule', default = False, action='store_true', help="Normal scheduling")
+
     # RUL prediction
     parser.add_argument('--use_rul_agent', default = False, action='store_true', help="Use agent to predict RUL")
     parser.add_argument('--rul_threshold', default = 7, type=float, help="RUL threshold, if 0, use RL to predict RUL")
@@ -105,12 +116,12 @@ def main(args):
     parser = get_config()
     all_args = parse_args(args, parser)
 
-    if all_args.algorithm_name == "rmappo" or all_args.algorithm_name == "rmappg":
-        assert (all_args.use_recurrent_policy or all_args.use_naive_recurrent_policy), ("check recurrent policy!")
-    elif all_args.algorithm_name == "mappo" or all_args.algorithm_name == "mappg":
-        assert (all_args.use_recurrent_policy == False and all_args.use_naive_recurrent_policy == False), ("check recurrent policy!")
-    else:
-        raise NotImplementedError
+    # if all_args.algorithm_name == "rmappo" or all_args.algorithm_name == "rmappg":
+    #     assert (all_args.use_recurrent_policy or all_args.use_naive_recurrent_policy), ("check recurrent policy!")
+    # elif all_args.algorithm_name == "mappo" or all_args.algorithm_name == "mappg":
+    #     assert (all_args.use_recurrent_policy == False and all_args.use_naive_recurrent_policy == False), ("check recurrent policy!")
+    # else:
+    #     raise NotImplementedError
 
     # cuda
     if all_args.cuda and torch.cuda.is_available():
@@ -135,9 +146,10 @@ def main(args):
     if all_args.use_wandb:
         wandb.login()
         run = wandb.init(config=all_args,
-                         project="async-RUL",
+                         project="async-scheduling",
                          name=str(all_args.algorithm_name) + "_" +
                          str(all_args.experiment_name),
+                         dir=str(run_dir),
                          job_type="training")
     else:
         if not run_dir.exists():

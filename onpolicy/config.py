@@ -186,7 +186,7 @@ def get_config():
     parser.add_argument("--algorithm_name", type=str,
                         default='mappo', choices=["rmappo", "mappo", "rmappg", "mappg", "ft_rrt", "ft_nearest", "ft_apf", "ft_utility", "ft_voronoi"])
 
-    parser.add_argument("--experiment_name", type=str, default="rul_threshold", help="an identifier to distinguish different experiment.")
+    parser.add_argument("--experiment_name", type=str, default="schedule", help="an identifier to distinguish different experiment.")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")
     parser.add_argument("--cuda", action='store_false', default=True, help="by default True, will use GPU to train; or else will use CPU;")
     parser.add_argument("--cuda_deterministic",
@@ -201,8 +201,8 @@ def get_config():
                         help="Number of parallel envs for rendering rollout")
     parser.add_argument("--num_env_steps", type=int, default=10e6,
                         help='Number of environment steps to train (default: 10e6)')
-    parser.add_argument("--user_name", type=str, default='zoeyuchao',help="[for wandb usage], to specify user's name for simply collecting training data.")
-    parser.add_argument("--wandb_name", type=str, default='zoeyuchao',help="[for wandb usage], to specify user's name for simply collecting training data.")
+    parser.add_argument("--user_name", type=str, default='hitliuweihao',help="[for wandb usage], to specify user's name for simply collecting training data.")
+    parser.add_argument("--wandb_name", type=str, default='hitliuweihao',help="[for wandb usage], to specify user's name for simply collecting training data.")
     parser.add_argument("--use_wandb", action='store_false', default=True, help="[for wandb usage], by default True, will log date to wandb server. or else will use tensorboard to log data.")
 
     # env parameters
@@ -247,10 +247,10 @@ def get_config():
     # recurrent parameters
     parser.add_argument("--use_naive_recurrent_policy", action='store_true',
                         default=False, help='Whether to use a naive recurrent policy')
-    parser.add_argument("--use_recurrent_policy", action='store_false',
+    parser.add_argument("--use_recurrent_policy", action='store_true',
                         default=False, help='use a recurrent policy')
     parser.add_argument("--recurrent_N", type=int, default=1, help="The number of recurrent layers.")
-    parser.add_argument("--data_chunk_length", type=int, default=10,
+    parser.add_argument("--data_chunk_length", type=int, default=50,
                         help="Time length of chunks used to train a recurrent_policy")
     parser.add_argument("--use_influence_policy", action='store_true',
                         default=False, help='use a recurrent policy')
