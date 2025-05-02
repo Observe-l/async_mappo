@@ -155,7 +155,7 @@ class async_scheduling(object):
                 rew[agent_id, 0] = self._single_reward(tmp_truck)
                 '''No reward when truck is broken or maintain'''
                 if tmp_truck.recover_flag == 1:
-                    rew[agent_id, 0] = -10
+                    rew[agent_id, 0] = 0
                     tmp_truck.recover_flag = 0
                 elif tmp_truck.recover_flag == 2:
                     rew[agent_id, 0] = -50

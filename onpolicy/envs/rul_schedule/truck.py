@@ -117,9 +117,13 @@ class Truck(object):
         # If loaded, change the state to waiting
         elif self.state == 'loading':
             self.load_time -= 1
-            if self.load_time <= 0:
+            if self.load_time <= 0 and self.weight > 0:
                 self.state = 'waiting'
                 self.operable_flag = True
+            # Randomly select a destination to get raw materials
+            elif self.load_time <= 0 and self.weight == 0:
+                next_destination = f'Factory{random.randint(0,44)}'
+                self.delivery(next_destination)
         # Check the truck in the delivery state arrive the destination or not
         # If arrived, change the state to waiting (empty) or arrived (loaded)
         elif self.state == 'delivery':

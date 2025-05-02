@@ -49,6 +49,7 @@ def make_eval_env(all_args):
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str, default='rul_schedule', help="Which scenario to run on")
+    parser.add_argument('--project_name', type=str, default='RUL', help="wandb project name")
     parser.add_argument('--num_agents', type=int, default=12, help="number of trucks")
     parser.add_argument('--max_steps', type=int, default=800, help="Max step of each episode and max env step")
     parser.add_argument("--use_single_reward", action='store_true', default=False,
@@ -146,7 +147,7 @@ def main(args):
     if all_args.use_wandb:
         wandb.login()
         run = wandb.init(config=all_args,
-                         project="async-scheduling",
+                         project=all_args.project_name,
                          name=str(all_args.algorithm_name) + "_" +
                          str(all_args.experiment_name),
                          dir=str(run_dir),

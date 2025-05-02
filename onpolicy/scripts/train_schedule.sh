@@ -1,1 +1,1 @@
-python3 train_schedule.py --max_steps 300 --use_recurrent_policy --recurrent_N 6 --exp_type schedule_map --experiment_name map --scenario_name map_schedule --env_name async_schedule
+python3 train_schedule.py --max_steps 800 --use_recurrent_policy --recurrent_N 6 --exp_type rul_all_RL --experiment_name all_RL --scenario_name rul_schedule --env_name async_schedule --project_name async-RUL
