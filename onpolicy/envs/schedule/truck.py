@@ -20,8 +20,7 @@ class Truck(object):
         self.product = product
 
         self.operable_flag = True
-        self.matainance_flag = False
-        self.broken_flag = False
+        self.schedule_flag = False
 
         # record total transported product
         self.total_product = 0.0

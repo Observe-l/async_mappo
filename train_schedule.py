@@ -18,8 +18,10 @@ from onpolicy.envs.env_wrappers import ScheduleEnv
 def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            if all_args.rul_schedule:
+            if all_args.scenario_name == "rul_schedule":
                 from onpolicy.envs.rul_schedule.schedule import async_scheduling
+            elif all_args.scenario_name == "map_schedule":
+                from onpolicy.envs.schedule.map_schedule import async_scheduling
             else:
                 from onpolicy.envs.schedule.schedule import async_scheduling
             env = async_scheduling(all_args)
@@ -32,8 +34,10 @@ def make_train_env(all_args):
 def make_eval_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            if all_args.rul_schedule:
+            if all_args.scenario_name == "rul_schedule":
                 from onpolicy.envs.rul_schedule.schedule import async_scheduling
+            elif all_args.scenario_name == "map_schedule":
+                from onpolicy.envs.schedule.map_schedule import async_scheduling
             else:
                 from onpolicy.envs.schedule.schedule import async_scheduling
             env = async_scheduling(all_args)
@@ -46,7 +50,6 @@ def make_eval_env(all_args):
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str, default='rul_schedule', help="Which scenario to run on")
     parser.add_argument('--num_agents', type=int, default=12, help="number of trucks")
-    parser.add_argument('--num_factory', type=int, default=50, help="number of factories")
     parser.add_argument('--max_steps', type=int, default=800, help="Max step of each episode and max env step")
     parser.add_argument("--use_single_reward", action='store_true', default=False,
                         help="use single reward")
@@ -98,9 +101,6 @@ def parse_args(args, parser):
     parser.add_argument('--use_stack', default = False, action='store_true')
     parser.add_argument('--astar_cost_mode', default = 'normal', choices = ['normal', 'utility'])
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
-
-    # Normal scheduling or RUL scheduling
-    parser.add_argument('--rul_schedule', default = False, action='store_true', help="Normal scheduling")
 
     # RUL prediction
     parser.add_argument('--use_rul_agent', default = False, action='store_true', help="Use agent to predict RUL")

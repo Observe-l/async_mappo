@@ -26,7 +26,7 @@ class async_scheduling(object):
             share_obs_dim += obs_dim
             obs_space["global_obs"] = Box(low=-1, high=30000, shape=(obs_dim,))
             self.observation_space.append(Dict(obs_space))
-            self.action_space[agent_id] = Discrete(self.factory_num)
+            self.action_space[agent_id] = Discrete(45)
         share_obs_space["global_obs"] = Box(low=-1, high=30000, shape=(share_obs_dim,))
         self.share_observation_space = [Dict(share_obs_space) for _ in range(self.truck_num)]
                                             
@@ -55,20 +55,16 @@ class async_scheduling(object):
 
     def step(self, action_dict:dict):
         # Set action
+        # self.save_debug(self.episode_len, action_dict)
         self._set_action(action_dict)
         # Run the sumo until any of the agents are avaiable
         sumo_flag = True
         step_length = 0
         while sumo_flag:
-            self.producer.produce_step()
+            self.producer.map_produce_step()
             sumo_flag = not any([tmp_truck.operable_flag for tmp_truck in self.truck_agents])
             step_length += 1
             self.episode_len += 1
-        # Early termination, After 7 days, if any of the products are not produced, terminate the episode, give a penalty of -10
-        if self.episode_len >= 7 * 24 *3600 and self.early_termination():
-            self.info = {'early_termination': True}
-        else:
-            self.info = {'early_termination': False}
         # Get observation, reward. record the result
         obs = self._get_obs()
         rewards = self._get_reward()
@@ -120,12 +116,10 @@ class async_scheduling(object):
             distance = [value for key, value in tmp_truck.map_distance.items() if key.startswith(tmp_truck.position + '_to_')]
             # Current position
             position = int(tmp_truck.position[7:])
-            # Empty or not
-            weight = tmp_truck.weight
             # The transported product
             product = tmp_truck.get_truck_product()
             agent_id = int(tmp_truck.id.split('_')[1])
-            observation[agent_id] = np.concatenate([queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
+            observation[agent_id] = np.concatenate([queue_obs]+[distance]+[[position]]+[[product]])
         return observation
     
     def _get_reward(self):
@@ -136,8 +130,6 @@ class async_scheduling(object):
             agent_id = int(tmp_truck.id.split('_')[1])
             if tmp_truck.operable_flag:
                 rew[agent_id, 0] = self._single_reward(tmp_truck)
-                if self.info['early_termination']:
-                    rew[agent_id, 0] = -10
                 if self.invalid[agent_id]:
                     # rew[agent_id, 0] = -10
                     self.invalid[agent_id] = False
@@ -188,7 +180,6 @@ class async_scheduling(object):
         '''Generate trucks and factories'''
         map_data = np.load("onpolicy/envs/schedule/50f.npy",allow_pickle=True).item()
         self.truck_agents = [Truck(truck_id=f'truck_{i}', map_data=map_data) for i in range(self.truck_num)]
-        # self.factory = [Factory(factory_id=f'factory_{i}', product=f'P{i}') for i in range(self.factory_num)]
         self.factory = {f'Factory{i}': Factory(factory_id=f'Factory{i}', product=f'P{i}') for i in range(self.factory_num)}
 
         '''Generate the final product'''
@@ -220,6 +211,7 @@ class async_scheduling(object):
         self.product_file = folder_path + 'product.csv'
         self.agent_file = folder_path + 'result.csv'
         self.distance_file = folder_path + 'distance.csv'
+        
 
         # Create result file
         with open(self.product_file,'w') as f:
@@ -243,6 +235,15 @@ class async_scheduling(object):
                 agent_list = [f'step_{agent.id}', f'total_{agent.id}']
                 distance_list += agent_list
             f_csv.writerow(distance_list)
+
+        # self.debug_folder = folder_path + 'debug/'
+        # Path(self.debug_folder).mkdir(parents=True, exist_ok=True)
+        # for tmp_truck in self.truck_agents:
+        #     debug_file = self.debug_folder + f'{tmp_truck.id}.csv'
+        #     with open(debug_file, 'w') as f:
+        #         f_csv = writer(f)
+        #         result_list = ['time', 'action', 'position', 'destination', 'product', 'state', 'weight']
+        #         f_csv.writerow(result_list)
 
     def early_termination(self):
         '''Make sure all the products are produced'''
@@ -295,3 +296,13 @@ class async_scheduling(object):
             for tmp_agent in self.truck_agents:
                 distance_list += [tmp_agent.driving_distance, tmp_agent.total_distance]
             f_csv.writerow(distance_list)
+    
+    def save_debug(self, time, action_dict = None):
+        current_time = round(time/3600,3)
+        for agent_id, action in action_dict.items():
+            tmp_truck = self.truck_agents[int(agent_id)]
+            debug_file = self.debug_folder + f'{tmp_truck.id}.csv'
+            with open(debug_file, 'a') as f:
+                f_csv = writer(f)
+                debug_list = [current_time, action, tmp_truck.position, tmp_truck.destination, tmp_truck.weight, tmp_truck.state]
+                f_csv.writerow(debug_list)

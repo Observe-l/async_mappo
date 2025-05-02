@@ -13,7 +13,7 @@ import string
 class async_scheduling(object):
     def __init__(self, args):
         self.truck_num = args.num_agents
-        self.factory_num = args.num_factory
+        self.factory_num = 50
         self.use_rul_agent = args.use_rul_agent
         self.rul_threshold = args.rul_threshold
 
