@@ -16,6 +16,8 @@ class async_scheduling(object):
         self.factory_num = 50
         self.use_rul_agent = args.use_rul_agent
         self.rul_threshold = args.rul_threshold
+        self.rul_state = args.rul_state
+        print("RUL threshold: ", self.rul_threshold)
 
         self.init_env()
         obs_space = {}
@@ -90,7 +92,7 @@ class async_scheduling(object):
         self.flag_reset()
         # Save the results
         self.save_results(self.episode_len, step_length, action_dict, rewards)
-        if self.episode_len >= 30 * 24 *3600:
+        if self.episode_len >= 7 * 24 * 3600:
             self.done = np.array([True for _ in range(self.truck_num)])
         return obs, rewards, self.done, {}
 
@@ -142,7 +144,10 @@ class async_scheduling(object):
             # The transported product
             product = tmp_truck.get_truck_product()
             agent_id = int(tmp_truck.id.split('_')[1])
-            observation[agent_id] = np.concatenate([[tmp_truck.rul]]+[queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
+            if self.rul_state:
+                observation[agent_id] = np.concatenate([[tmp_truck.rul]]+[queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
+            else:
+                observation[agent_id] = np.concatenate([queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
         return observation
     
     def _get_reward(self):

@@ -1,1 +1,3 @@
-python3 train_schedule.py --max_steps 800 --use_recurrent_policy --recurrent_N 6 --exp_type rul_all_RL --experiment_name all_RL --scenario_name rul_schedule --env_name async_schedule --project_name async-RUL
+python3 train_schedule.py --max_steps 800 --use_recurrent_policy --recurrent_N 6 --rul_threshold 110 --exp_type rul_threshold_110 --experiment_name threshold_110 --scenario_name rul_schedule --env_name async_schedule --project_name async-RUL --use_rul_agent --rul_state
+
+python3 evaluate.py --max_steps 800 --use_recurrent_policy --recurrent_N 6 --exp_type rul_threshold --experiment_name threshold_7 --scenario_name rul_schedule --env_name async_schedule --project_name async-RUL

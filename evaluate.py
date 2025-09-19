@@ -20,6 +20,8 @@ def make_train_env(all_args):
         def init_env():
             if all_args.scenario_name == "rul_schedule":
                 from onpolicy.envs.rul_schedule.schedule import async_scheduling
+            elif all_args.scenario_name == "rul_schedule_sumo":
+                from onpolicy.envs.rul_schedule.sumo_schedule import async_scheduling_sumo as async_scheduling
             elif all_args.scenario_name == "map_schedule":
                 from onpolicy.envs.schedule.map_schedule import async_scheduling
             else:
@@ -36,6 +38,8 @@ def make_eval_env(all_args):
         def init_env():
             if all_args.scenario_name == "rul_schedule":
                 from onpolicy.envs.rul_schedule.schedule import async_scheduling
+            elif all_args.scenario_name == "rul_schedule_sumo":
+                from onpolicy.envs.rul_schedule.sumo_schedule import async_scheduling_sumo as async_scheduling
             elif all_args.scenario_name == "map_schedule":
                 from onpolicy.envs.schedule.map_schedule import async_scheduling
             else:
@@ -49,6 +53,7 @@ def make_eval_env(all_args):
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str, default='rul_schedule', help="Which scenario to run on")
+    parser.add_argument('--sumo_cfg', type=str, default='', help='Path to SUMO .sumocfg when using rul_schedule_sumo')
     parser.add_argument('--project_name', type=str, default='RUL', help="wandb project name")
     parser.add_argument('--num_agents', type=int, default=12, help="number of trucks")
     parser.add_argument('--max_steps', type=int, default=800, help="Max step of each episode and max env step")
@@ -104,8 +109,7 @@ def parse_args(args, parser):
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
 
     # RUL prediction
-    parser.add_argument('--rul_state', default = False, action='store_true', help="Use RUL in state")
-    parser.add_argument('--use_rul_agent', default = False, action='store_true', help="Use agent to predict RUL")
+    parser.add_argument('--use_rul_agent', default = True, action='store_true', help="Use agent to predict RUL")
     parser.add_argument('--rul_threshold', default = 7, type=float, help="RUL threshold, if 0, use RL to predict RUL")
     parser.add_argument('--exp_type', type=str, default='rul', help="experiment name")
 
@@ -189,9 +193,12 @@ def main(args):
     }
 
     # run experiments
-    from onpolicy.runner.shared.schedule_runner import ScheduleRunner as Runner
+    from onpolicy.runner.shared.schedule_eva_runner import ScheduleRunner as Runner
 
     runner = Runner(config)
+    actor_path = "/home/lwh/Documents/Code/results/async_schedule/rul_schedule/mappo/threshold_7/wandb/run-20250503_002045-r5psc472/files"
+    runner.load_actor(actor_path)
+    print("load actor from: ", actor_path)
     runner.run()
     
     # post process
