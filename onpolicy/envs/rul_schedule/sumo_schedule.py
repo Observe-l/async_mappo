@@ -29,14 +29,14 @@ class TelemetryGUI:
         self.get_data_cb = get_data_cb
         self.root = tk.Tk()
         self.root.title(title)
-        cols = ('Truck', 'RUL', 'Distance (km)', 'Destination', 'Maintaining')
+        cols = ('Truck', 'RUL', 'Distance (km)', 'Destination', 'Cargo', 'Maintaining')
         self.tree = ttk.Treeview(self.root, columns=cols, show='headings', height=min(20, num_agents))
         for c in cols:
             self.tree.heading(c, text=c)
             self.tree.column(c, width=140, anchor='center')
         self.tree.pack(fill=tk.BOTH, expand=True)
         for i in range(self.num_agents):
-            self.tree.insert('', tk.END, values=(f'truck_{i}', '-', '-', '-', '-'))
+            self.tree.insert('', tk.END, values=(f'truck_{i}', '-', '-', '-', '-', '-'))
         self._schedule_refresh()
 
     def _schedule_refresh(self):
@@ -56,11 +56,21 @@ class TelemetryGUI:
         for i, row in enumerate(data):
             dist = row.get('distance_km')
             dist_str = f"{dist:.3f}" if isinstance(dist, (int, float)) else (dist if dist is not None else '-')
+            # Determine cargo label
+            cargo = row.get('cargo')
+            if cargo is None:
+                p = row.get('product', -1)
+                w = row.get('weight', 0.0)
+                if isinstance(w, (int, float)) and w > 0 and isinstance(p, int) and p >= 0:
+                    cargo = f"P{p} x {int(w)}"
+                else:
+                    cargo = 'Empty'
             vals = (
                 f"truck_{i}",
                 f"{row.get('rul','-')}",
                 dist_str,
                 row.get('destination','-'),
+                cargo,
                 'Yes' if row.get('maintaining', False) else 'No'
             )
             self.tree.item(items[i], values=vals)
@@ -173,8 +183,24 @@ class async_scheduling_sumo(object):
                 traci.vehicle.add(vehID=vid, routeID=route_id, typeID="truck")
             traci.vehicle.setParkingAreaStop(vehID=vid, stopID=init_pa)
             self.destinations[i] = init_pa
+            # Initialize cargo and timers: trucks start empty and considered already 'arrived' at init_pa
+            self.weight[i] = 0.0
+            self.product_idx[i] = -1
+            self.loading_until[i] = None
+            self.unloading_until[i] = None
+            # Set to None so initial parked state is treated as a fresh arrival
+            self.last_arrived_at[i] = None
+            # Color trucks by cargo state: empty=blue, loaded=orange
+            try:
+                traci.vehicle.setColor(vid, (0, 128, 255, 255))  # blue for empty
+            except Exception:
+                pass
         for _ in range(10):
             traci.simulationStep()
+        # Build/refresh cached factory edges after the network is live
+        self._build_distance_edge_cache()
+        # Handle initial arrivals: start loading at material factories or auto-pick at finals
+        self._maybe_handle_arrival()
         # Initialize GUI panel for telemetry if GUI is enabled (start once)
         if not hasattr(self, 'rul_values'):
             self.rul_values = {i: 125 for i in range(self.truck_num)}
@@ -197,7 +223,19 @@ class async_scheduling_sumo(object):
             self.pending_maintain[agent_id] = False
         vid = f"truck_{agent_id}"
         dest_pa = f"Factory{int(action)}"
+        # If action targets the current destination and the truck is already parked there,
+        # ignore as a no-op to avoid consuming the decision and getting stuck. This mirrors
+        # the training env's invalid-action handling (a short wait) without blocking here.
+        current_pa = self.destinations.get(agent_id)
+        if current_pa == dest_pa and self._arrived_operable(agent_id):
+            if getattr(self, 'debug', False):
+                print(f"[SUMO DEBUG] ignore same-destination action for agent={agent_id} at {dest_pa}")
+            # Keep decision ready so RL can choose a different destination immediately
+            self._decision_ready[agent_id] = True
+            return
         self.destinations[agent_id] = dest_pa
+        # Clear decision ready (we've consumed the arrival decision) only when destination changes
+        self._decision_ready[agent_id] = False
         try:
             lane_id = traci.parkingarea.getLaneID(dest_pa)
             edge_id = traci.lane.getEdgeID(lane_id) if lane_id else None
@@ -363,7 +401,13 @@ class async_scheduling_sumo(object):
     def step(self, action_dict: dict):
         # Apply actions
         for agent_id, action in action_dict.items():
-            self._set_destination(int(agent_id), int(action))
+            aid = int(agent_id)
+            # Ignore action if in maintenance or cargo timing
+            if self.maintaining.get(aid, False):
+                continue
+            if self.unloading_until.get(aid) is not None or self.loading_until.get(aid) is not None:
+                continue
+            self._set_destination(aid, int(action))
         # Advance SUMO until any non-maintaining truck has arrived
         operable = []
         guard = 0
@@ -584,10 +628,26 @@ class async_scheduling_sumo(object):
                 dest_label = 'Workshop'
             else:
                 dest_label = dest
+            # Cargo label for GUI
+            try:
+                w = float(self.weight.get(i, 0.0))
+                p = int(self.product_idx.get(i, -1))
+                if w > 0 and p >= 0:
+                    # Show only product label (no numeric count)
+                    cargo_label = f"P{p}"
+                else:
+                    cargo_label = "Empty"
+            except Exception:
+                cargo_label = "Empty"
             rows.append({
                 'rul': self.rul_values.get(i, 125),
                 'distance_km': dist_km,
                 'destination': dest_label,
-                'maintaining': self.maintaining.get(i, False)
+                'maintaining': self.maintaining.get(i, False),
+                'weight': self.weight.get(i, 0.0),
+                'product': self.product_idx.get(i, -1),
+                'loading_until': self.loading_until.get(i),
+                'unloading_until': self.unloading_until.get(i),
+                'cargo': cargo_label
             })
         return rows

@@ -225,12 +225,7 @@ class SumoDemo:
                     traci.gui.trackVehicle(self._view_id, self.veh_ids[0])
                 except Exception:
                     pass
-            # Brightly color our demo trucks
-            for vid in self.veh_ids:
-                try:
-                    traci.vehicle.setColor(vid, (255, 0, 255, 255))  # magenta with full alpha
-                except Exception:
-                    pass
+            # Do not override colors here; env will set based on cargo
         except Exception:
             pass
 
@@ -263,11 +258,7 @@ class SumoDemo:
                 self._last_sumo_dist[vid] = None
             except Exception:
                 pass
-            # Reapply highlight color
-            try:
-                traci.vehicle.setColor(vid, (255, 0, 255, 255))
-            except Exception:
-                pass
+            # Do not override colors here; env will set based on cargo
             # Reapply permissive speed/rerouting
             try:
                 traci.vehicle.setSpeedMode(vid, 0)
@@ -377,9 +368,8 @@ class SumoDemo:
                 safe_route = f"{dest_pa}_to_{dest_pa}"
                 traci.vehicle.add(vehID=vid, routeID=safe_route, typeID='truck')
                 traci.vehicle.setParkingAreaStop(vehID=vid, stopID=dest_pa)
-                # Reapply visuals and params
+                # Reapply params (do not override color; env handles visuals)
                 try:
-                    traci.vehicle.setColor(vid, (255, 0, 255, 255))
                     traci.vehicle.setSpeedMode(vid, 0)
                     traci.vehicle.setMaxSpeed(vid, 25.0)
                     traci.vehicle.setParameter(vid, "device.rerouting.probability", "1")
@@ -806,6 +796,7 @@ class TruckStatus:
     rul: Optional[float]
     distance_km: float
     destination: str
+    cargo: str
     maintain: bool
     state: str
     speed_m_s: Optional[float]
@@ -829,18 +820,18 @@ class SumoInfoGUI:
         self.root.title("SUMO Schedule Demo - Truck Status")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        cols = ("Truck", "RUL", "Distance (km)", "Destination", "Maintain", "State")
+        cols = ("Truck", "RUL", "Distance (km)", "Destination", "Cargo", "Maintain", "State")
         self.tree = ttk.Treeview(self.root, columns=cols, show="headings", height=min(20, num_agents))
         for c in cols:
             self.tree.heading(c, text=c)
-            width = 130 if c != "Destination" else 160
+            width = 130 if c not in ("Destination", "Cargo") else 180
             self.tree.column(c, width=width, anchor="center")
         self.tree.pack(fill="both", expand=True)
 
         # Precreate rows
         self._rows = []
         for i in range(num_agents):
-            row_id = self.tree.insert("", "end", values=(f"truck_{i}", "-", "-", "-", "-", "-"))
+            row_id = self.tree.insert("", "end", values=(f"truck_{i}", "-", "-", "-", "-", "-", "-"))
             self._rows.append(row_id)
         # Row click focuses the selected truck in SUMO
         self.tree.bind("<ButtonRelease-1>", self._on_row_click)
@@ -895,9 +886,10 @@ class SumoInfoGUI:
                 rul_str = f"{status.rul:.1f}" if status.rul is not None else "-"
                 dist_str = f"{status.distance_km:.2f}"
                 dest_str = status.destination
+                cargo_str = status.cargo
                 maint_str = "Yes" if status.maintain else "No"
                 state_str = status.state
-                self.tree.item(self._rows[i], values=(status.truck_id, rul_str, dist_str, dest_str, maint_str, state_str))
+                self.tree.item(self._rows[i], values=(status.truck_id, rul_str, dist_str, dest_str, cargo_str, maint_str, state_str))
         finally:
             if not self.stopped():
                 self.root.after(300, self._refresh)
@@ -1301,6 +1293,7 @@ def main():
                 rul=rul_val,
                 distance_km=dist_km,
                 destination=str(dest_display) if dest_display else "-",
+                cargo=cargo_str,
                 maintain=maintain,
                 state=state_str,
                 speed_m_s=speed_val,
