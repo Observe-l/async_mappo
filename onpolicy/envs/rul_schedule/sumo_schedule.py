@@ -83,6 +83,8 @@ class async_scheduling_sumo(object):
         self.rul_threshold = args.rul_threshold
         self.rul_state = getattr(args, 'rul_state', False)
         self.sumo_cfg = args.sumo_cfg
+        self.wait_limit = getattr(args, 'sumo_wait_limit', 600)
+        self._last_debug_log = -500
         # Maintenance timing (reuse values close to truck.py defaults)
         self.maintain_time = getattr(args, 'maintain_time', 6*3600)
         # GUI backend selection
@@ -96,9 +98,14 @@ class async_scheduling_sumo(object):
                 print("Failed to import traci for GUI, falling back to libsumo:", e)
                 self.use_sumo_gui = False
         self._telemetry_started = False
-
-        self._start_sumo(self.sumo_cfg)
-        self._spawn_trucks()
+        # Defer SUMO startup to first reset() to avoid double-launching GUI
+        self._started = False
+        # Initialize placeholders so observation/action spaces can be built pre-reset
+        self.veh_ids = []
+        self.destinations = {}
+        self.maintaining = {i: False for i in range(self.truck_num)}
+        self.maintain_timer = {i: 0 for i in range(self.truck_num)}
+        self.pending_maintain = {i: False for i in range(self.truck_num)}
 
         self.predictor = predictor()
         self.init_offline_factories()
@@ -109,16 +116,22 @@ class async_scheduling_sumo(object):
         self.observation_space = []
         self.action_space = {}
         obs = self._get_obs()
-        share_obs_dim = 0
-        for agent_id, tmp_obs in obs.items():
-            obs_dim = len(tmp_obs)
-            share_obs_dim += obs_dim
-            obs_space["global_obs"] = Box(low=-1, high=30000, shape=(obs_dim,))
-            self.observation_space.append(Dict(obs_space))
-            if self.use_rul_agent:
-                self.action_space[agent_id] = Discrete(self.factory_num)
-            else:
-                self.action_space[agent_id] = Discrete(self.factory_num+1)
+        if obs:
+            sample_obs = next(iter(obs.values()))
+            obs_dim = len(sample_obs)
+        else:
+            queue_obs = self._queue_snapshot()
+            obs_dim = len(queue_obs) + self.factory_num + 3
+            if self.rul_state:
+                obs_dim += 1
+        share_obs_dim = obs_dim * self.truck_num
+        obs_space["global_obs"] = Box(low=-1, high=30000, shape=(obs_dim,))
+        self.observation_space = [Dict(obs_space) for _ in range(self.truck_num)]
+        if self.use_rul_agent:
+            act_space = Discrete(self.factory_num)
+        else:
+            act_space = Discrete(self.factory_num+1)
+        self.action_space = {i: act_space for i in range(self.truck_num)}
         share_obs_space["global_obs"] = Box(low=-1, high=30000, shape=(share_obs_dim,))
         self.share_observation_space = [Dict(share_obs_space) for _ in range(self.truck_num)]
 
@@ -166,17 +179,16 @@ class async_scheduling_sumo(object):
         if not hasattr(self, 'rul_values'):
             self.rul_values = {i: 125 for i in range(self.truck_num)}
         if (not self._telemetry_started) and self.use_sumo_gui and tk is not None:
-            try:
-                self._telemetry = TelemetryGUI(self.truck_num, self._collect_gui_data)
-                threading.Thread(target=self._telemetry.run, daemon=True).start()
-                self._telemetry_started = True
-            except Exception as e:
-                print("Failed to start Telemetry GUI:", e)
+            # Tkinter must run on the main thread; the demo script already provides rich GUI widgets.
+            # To avoid threading violations ("Calling Tcl from different apartment"), skip spawning the
+            # auxiliary telemetry window when SUMO GUI is active.
+            self._telemetry_started = True
 
     def _set_destination(self, agent_id: int, action: int):
         # If in maintenance, ignore new actions
         if self.maintaining.get(agent_id, False):
             return
+        print(f"[SUMO DEBUG] request set_destination agent={agent_id} raw_action={action}")
         # Maintain action: route to Factory0
         if (not self.use_rul_agent) and action >= self.factory_num:
             action = 0
@@ -187,20 +199,58 @@ class async_scheduling_sumo(object):
         dest_pa = f"Factory{int(action)}"
         self.destinations[agent_id] = dest_pa
         try:
-            edge_id = traci.parkingarea.getRoadID(dest_pa)
+            lane_id = traci.parkingarea.getLaneID(dest_pa)
+            edge_id = traci.lane.getEdgeID(lane_id) if lane_id else None
             if edge_id:
+                try:
+                    cur_edge = traci.vehicle.getRoadID(vid)
+                except Exception:
+                    cur_edge = None
+                if cur_edge is not None:
+                    print(f"[SUMO DEBUG] set_destination truck_{agent_id}: {cur_edge}->{edge_id} via {dest_pa}")
+                if cur_edge and cur_edge != edge_id:
+                    try:
+                        route = traci.simulation.findRoute(cur_edge, edge_id, routingMode=0)
+                        edges = route.edges if hasattr(route, 'edges') else route
+                        if edges:
+                            preview = list(edges[:5])
+                            if len(edges) > 5:
+                                preview.append('...')
+                            print(f"[SUMO DEBUG] set_route truck_{agent_id}: len={len(edges)} preview={preview}")
+                            traci.vehicle.setRoute(vid, edges)
+                        else:
+                            print(f"[SUMO DEBUG] route empty for {vid}: {cur_edge}->{edge_id}")
+                    except Exception:
+                        print(f"[SUMO DEBUG] route failed for {vid}: {cur_edge}->{edge_id}")
                 try:
                     traci.vehicle.changeTarget(vehID=vid, edgeID=edge_id)
                 except Exception:
-                    pass
-            # If currently parked, resume
+                    print(f"[SUMO DEBUG] changeTarget failed for {vid} to {edge_id}")
             try:
-                stops = traci.vehicle.getStops(vehID=vid)
-                if stops and stops[0].arrival > 0:
-                    traci.vehicle.resume(vehID=vid)
+                traci.vehicle.clearPendingStops(vehID=vid)
             except Exception:
                 pass
-            traci.vehicle.setParkingAreaStop(vehID=vid, stopID=dest_pa)
+            # If currently parked, resume
+            try:
+                if traci.vehicle.isStoppedParking(vid):
+                    traci.vehicle.resume(vid)
+            except Exception:
+                pass
+            try:
+                traci.vehicle.rerouteParkingArea(vehID=vid, stopID=dest_pa)
+            except Exception:
+                pass
+            traci.vehicle.setParkingAreaStop(vehID=vid, stopID=dest_pa, duration=1)
+            try:
+                traci.vehicle.setSpeedMode(vid, 0)
+                traci.vehicle.setMaxSpeed(vid, 25.0)
+                traci.vehicle.setSpeed(vid, -1)
+            except Exception:
+                pass
+            try:
+                traci.vehicle.resume(vid)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -211,12 +261,27 @@ class async_scheduling_sumo(object):
             return False
         try:
             stops = traci.vehicle.getStops(vehID=vid)
-            if not stops:
-                return False
-            latest = stops[-1]
-            return (latest.arrival > 0) and (latest.stoppingPlaceID == target)
         except Exception:
-            return False
+            stops = []
+
+        try:
+            if stops:
+                latest = stops[-1]
+                if latest.stoppingPlaceID == target and getattr(latest, "arrival", -1) >= 0:
+                    return True
+        except Exception:
+            pass
+
+        try:
+            if traci.vehicle.isStoppedParking(vid):
+                dest_lane = traci.parkingarea.getLaneID(target)
+                dest_edge = traci.lane.getEdgeID(dest_lane)
+                cur_edge = traci.vehicle.getRoadID(vid)
+                if cur_edge == dest_edge:
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _update_maintenance(self, ticks: int):
         """Advance maintenance timers and recover trucks when done.
@@ -264,9 +329,25 @@ class async_scheduling_sumo(object):
 
     def reset(self, seed=None, options=None):
         self.make_folder()
-        # Reinitialize SUMO world to clear parked states
-        self._start_sumo(self.sumo_cfg)
-        self._spawn_trucks()
+        # Start or reload SUMO world
+        if not getattr(self, "_started", False):
+            # First reset: start SUMO once and spawn trucks
+            self._start_sumo(self.sumo_cfg)
+            self._spawn_trucks()
+            self._started = True
+        else:
+            # Subsequent resets: prefer in-place reload (single GUI window)
+            try:
+                traci.simulation.getTime()
+                try:
+                    traci.load(["-c", self.sumo_cfg, "--no-warnings", "True"])  # type: ignore[arg-type]
+                except Exception:
+                    # Fallback to full restart only if load fails
+                    self._start_sumo(self.sumo_cfg)
+            except Exception:
+                # No active connection; start fresh
+                self._start_sumo(self.sumo_cfg)
+            self._spawn_trucks()
         # Reset maintenance flags
         self.maintaining = {i: False for i in range(self.truck_num)}
         self.maintain_timer = {i: 0 for i in range(self.truck_num)}
@@ -275,6 +356,7 @@ class async_scheduling_sumo(object):
         self.episode_num += 1
         self.episode_len = 0
         self.done = np.array([False for _ in range(self.truck_num)])
+        self._last_debug_log = -500
         obs = self._get_obs()
         return obs
 
@@ -285,17 +367,26 @@ class async_scheduling_sumo(object):
         # Advance SUMO until any non-maintaining truck has arrived
         operable = []
         guard = 0
-        while len(operable) == 0:
+        while len(operable) == 0 and guard < self.wait_limit:
             # offline produce once per SUMO step to emulate time passing
             for f in self.factory.values():
                 f.produce()
             traci.simulationStep()
             # Update maintenance timers and states
             self._update_maintenance(1)
+            self._maybe_log_truck_state()
             operable = [i for i in range(self.truck_num) if self._arrived_operable(i) and not self.maintaining.get(i, False)]
             guard += 1
-            if guard > 10000:
-                break
+        if len(operable) == 0:
+            # hit wait limit without any arrival; return with current observation (likely empty)
+            self.episode_len += guard
+            obs = self._get_obs()
+            rewards = self._get_reward()
+            self.flag_reset()
+            self.save_results(self.episode_len, guard, action_dict, rewards)
+            if self.episode_len >= 30 * 24 * 3600:
+                self.done = np.array([True for _ in range(self.truck_num)])
+            return obs, rewards, self.done, {}
         self.episode_len += guard
 
         obs = self._get_obs()
@@ -307,23 +398,81 @@ class async_scheduling_sumo(object):
             self.done = np.array([True for _ in range(self.truck_num)])
         return obs, rewards, self.done, {}
 
+    def _maybe_log_truck_state(self):
+        try:
+            sim_time = traci.simulation.getTime()
+        except Exception:
+            return
+        if sim_time - self._last_debug_log < 500:
+            return
+        self._last_debug_log = sim_time
+        lines = [f"[SUMO DEBUG] t={int(sim_time)}s"]
+        for i in range(self.truck_num):
+            vid = f"truck_{i}"
+            try:
+                road = traci.vehicle.getRoadID(vid)
+            except Exception:
+                road = "?"
+            try:
+                waiting = traci.vehicle.getWaitingTime(vid)
+            except Exception:
+                waiting = -1
+            try:
+                pos = traci.vehicle.getLanePosition(vid)
+            except Exception:
+                pos = -1
+            try:
+                speed = traci.vehicle.getSpeed(vid)
+            except Exception:
+                speed = -1
+            try:
+                parking_state = traci.vehicle.getParkingState(vid)
+            except Exception:
+                parking_state = -1
+            try:
+                stop_state = traci.vehicle.getStopState(vid)
+            except Exception:
+                stop_state = -1
+            try:
+                route = traci.vehicle.getRoute(vid)
+                if isinstance(route, (list, tuple)) and len(route) > 0:
+                    preview = list(route[:5])
+                    if len(route) > 5:
+                        preview.append('...')
+                    route_str = f"{','.join(preview)} (len={len(route)})"
+                elif isinstance(route, str):
+                    route_str = route
+                else:
+                    route_str = "-"
+            except Exception:
+                route_str = "?"
+            try:
+                route_index = traci.vehicle.getRouteIndex(vid)
+            except Exception:
+                route_index = -1
+            try:
+                stops = traci.vehicle.getStops(vid)
+                if stops:
+                    latest_stop = stops[-1]
+                    stop_id = latest_stop.stoppingPlaceID
+                    stop_arrival = getattr(latest_stop, "arrival", -1)
+                else:
+                    stop_id = "-"
+                    stop_arrival = -1
+            except Exception:
+                stop_id = "?"
+                stop_arrival = -1
+            dest = self.destinations.get(i, '-')
+            arrived = self._arrived_operable(i)
+            maintaining = self.maintaining.get(i, False)
+            lines.append(
+                f"  truck_{i}: road={road} pos={pos:.1f} speed={speed:.2f} parkState={parking_state} stopState={stop_state} routeIndex={route_index} route=[{route_str}] stop={stop_id} arrival={stop_arrival} dest={dest} arrived={arrived} maintaining={maintaining} waiting={int(waiting)}"
+            )
+        print("\n".join(lines))
+
     def _get_obs(self):
         observation = {}
-        # Shared observation from offline factories
-        fac_truck_num = defaultdict(int)
-        for i in range(self.truck_num):
-            # Count trucks by intended destination (as proxy)
-            dest = self.destinations.get(i)
-            if dest is not None:
-                fac_truck_num[dest] += 1
-        warehouse_storage = []
-        com_truck_num = []
-        for tmp_factory in self.factory.values():
-            material_storage = list(tmp_factory.material_num.values())
-            product_storage = tmp_factory.product_num
-            warehouse_storage += material_storage + [product_storage]
-            com_truck_num.append(fac_truck_num[tmp_factory.id])
-        queue_obs = np.concatenate([warehouse_storage] + [com_truck_num])
+        queue_obs = self._queue_snapshot()
 
         # Observation for operable trucks only: trucks that arrived and not under maintenance
         for i in range(self.truck_num):
@@ -342,6 +491,21 @@ class async_scheduling_sumo(object):
                 else:
                     observation[i] = np.concatenate([queue_obs] + [distance_stub] + [[position_idx]] + [[weight]] + [[product]])
         return observation
+
+    def _queue_snapshot(self):
+        fac_truck_num = defaultdict(int)
+        for i in range(self.truck_num):
+            dest = self.destinations.get(i)
+            if dest is not None:
+                fac_truck_num[dest] += 1
+        warehouse_storage = []
+        com_truck_num = []
+        for tmp_factory in self.factory.values():
+            material_storage = list(tmp_factory.material_num.values())
+            product_storage = tmp_factory.product_num
+            warehouse_storage += material_storage + [product_storage]
+            com_truck_num.append(fac_truck_num[tmp_factory.id])
+        return np.concatenate([warehouse_storage] + [com_truck_num])
 
     def _get_reward(self):
         # Reuse schedule.py style: only short-term reward using final product increments

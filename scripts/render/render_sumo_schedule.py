@@ -2,14 +2,10 @@
 """
 Demo: Evaluate a trained async-MAPPO policy in a live SUMO simulation.
 
-This script reuses the offline-trained policy (trained on `onpolicy/envs/rul_schedule/schedule.py`)
-for decision making, and mirrors those decisions to a SUMO world so you can visually
-see trucks moving between factories. It does not attempt to perfectly synchronize
-SUMO-side inventories; it's a visual/control demo driven by the trained policy.
-
-Key behavior: Instead of using a fixed decision interval, the demo advances the
-SUMO simulation until at least one truck has arrived at its destination parking area
-(operable), similar to `refresh_state()` logic in `core.py`.
+This script now drives policy decisions directly from a SUMO-backed environment
+(`async_scheduling_sumo`) rather than the offline async_scheduling wrapper.
+The policy observes the SUMO world via that environment and dispatches trucks
+accordingly while optional Tkinter GUIs visualise their state.
 
 Requirements:
 - SUMO/libsumo available in your Python environment
@@ -27,7 +23,6 @@ python scripts/render/render_sumo_schedule.py \
 from __future__ import annotations
 import os
 import sys
-import time
 import argparse
 import random
 from pathlib import Path
@@ -38,8 +33,11 @@ from typing import List, Dict, Optional
 import numpy as np
 import torch
 
-# SUMO
-# Use libsumo for consistency with the repo; start with 'sumo-gui' to show the map
+"""
+SUMO TraCI binding
+- We do not start SUMO here; the env (async_scheduling_sumo) controls lifecycle.
+- Import libsumo by default; the env will rebind to GUI traci when use_sumo_gui=True.
+"""
 import libsumo as traci
 
 # Repo imports
@@ -56,63 +54,15 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from onpolicy.config import get_config
-from onpolicy.envs.env_wrappers import ScheduleEnv
+from onpolicy.envs.rul_schedule.sumo_schedule import async_scheduling_sumo
 from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy
-
-
-def make_envs(all_args):
-    """Create the offline scheduling envs used for inference (policy expects this)."""
-    def get_env_fn(rank):
-        def init_env():
-            if all_args.scenario_name == "rul_schedule":
-                from onpolicy.envs.rul_schedule.schedule import async_scheduling
-            elif all_args.scenario_name == "map_schedule":
-                from onpolicy.envs.schedule.map_schedule import async_scheduling
-            else:
-                from onpolicy.envs.schedule.schedule import async_scheduling
-            env = async_scheduling(all_args)
-            return env
-        return init_env
-
-    return ScheduleEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
-
-
 class SumoDemo:
-    """Minimal SUMO controller that mirrors policy decisions as vehicle destinations."""
-    def __init__(self, num_agents: int, sumo_cfg: str, factory_count: int = 50, headless: bool = False, debug: bool = False):
-        self.num_agents = num_agents
-        self.factory_count = factory_count
-        self.debug = bool(debug)
-        # Track current intended destination per agent_id (parking area name)
-        self.destinations = {i: None for i in range(self.num_agents)}
-        # Track last known parked parking area per agent for robust routing
-        self.current_pa: Dict[int, Optional[str]] = {i: None for i in range(self.num_agents)}
-        # Track whether SUMO has ended/connection closed
-        self._ended = False
-        # Cache last-known non-negative distances for stability in GUI
-        self._last_distance_m = {}
-        # Track last XY position and accumulated distance per vehicle for robust distance
-        self._last_xy = {}
-        self._cum_dist_m = {}
-        # Track last SUMO-reported absolute distance for delta computation
-        self._last_sumo_dist = {}
-        # Track last time (sim sec) when vehicle advanced distance
-        self._last_move_time = {}
-        # GUI view id for highlighting/tracking (if available)
-        self._view_id = None
-        # Cache available parking areas to avoid invalid IDs
-        self._pa_ids = []
-        self._start_sumo(sumo_cfg, headless=headless)
-        try:
-            self._pa_ids = list(traci.parkingarea.getIDList())
-        except Exception:
-            self._pa_ids = []
-        if self.debug:
-            sample_pa = self._pa_ids[:10]
-            print(f"[INIT] ParkingAreas found: count={len(self._pa_ids)} sample={sample_pa}")
-        self._spawn_trucks()
-        # After spawning, try to highlight and focus view if GUI
-        self._init_gui_view()
+    """
+    Deprecated: Controller formerly responsible for starting SUMO and direct TraCI control.
+    Kept for backward compatibility but no longer starts SUMO; env.reset() manages lifecycle.
+    """
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("SumoDemo is deprecated; the demo now uses async_scheduling_sumo directly.")
 
     def _dump_vehicle_status(self, agent_id: int):
         """Print detailed status for a vehicle (debug helper)."""
@@ -204,17 +154,8 @@ class SumoDemo:
         # Fallback to any available parking area
         return self._pa_ids[0] if self._pa_ids else None
 
-    def _start_sumo(self, sumo_cfg: str, headless: bool = False):
-        try:
-            traci.close()
-        except Exception:
-            pass
-        # Keep options in line with example files
-        exe = "sumo" if headless else "sumo-gui"
-        traci.start([
-            exe, "-c", sumo_cfg,
-            "--no-warnings", "True"
-        ])
+    def _start_sumo(self, *args, **kwargs):
+        raise RuntimeError("SumoDemo no longer manages SUMO startup.")
 
     def _spawn_trucks(self):
         self.veh_ids = []
@@ -375,6 +316,11 @@ class SumoDemo:
             try:
                 if traci.vehicle.isStoppedParking(vid):
                     traci.vehicle.resume(vid)
+            except Exception:
+                pass
+            # Parking-aware routing to produce a route terminating at the ParkingArea
+            try:
+                traci.vehicle.rerouteParkingArea(vid, dest_pa)
             except Exception:
                 pass
             # Ask SUMO to route to destination edge (core.py behavior)
@@ -703,12 +649,153 @@ class SumoDemo:
         d = self._cum_dist_m.get(vid, self._last_distance_m.get(vid, 0.0))
         return max(0.0, float(d) / 1000.0)
 
-    def focus_on(self, agent_id: int):
-        """Focus the GUI camera on a given truck if GUI is available."""
+    def focus_on(self, agent_id: Optional[int]):
+        """Control GUI camera following. If agent_id is None or <0, stop following."""
         if self._view_id is None:
             return
         try:
-            traci.gui.trackVehicle(self._view_id, f"truck_{agent_id}")
+            if agent_id is None or int(agent_id) < 0:
+                # Stop following the current vehicle (best-effort sequence)
+                done = False
+                try:
+                    if hasattr(traci.gui, 'trackOff'):
+                        traci.gui.trackOff(self._view_id)
+                        done = True
+                except Exception:
+                    pass
+                if not done:
+                    for unfollow_arg in ("", None, "off", " ", "__none__"):
+                        try:
+                            traci.gui.trackVehicle(self._view_id, unfollow_arg)  # type: ignore[arg-type]
+                            done = True
+                            break
+                        except Exception:
+                            continue
+                # As a last resort, tweak view without tracking
+                try:
+                    traci.gui.setZoom(self._view_id, 1200)
+                except Exception:
+                    pass
+            else:
+                traci.gui.trackVehicle(self._view_id, f"truck_{int(agent_id)}")
+        except Exception:
+            pass
+
+
+class SumoMonitor:
+    """Lightweight helper for visualisation and telemetry over a running SUMO sim."""
+
+    def __init__(self, num_agents: int, headless: bool = False, debug: bool = False):
+        self.num_agents = num_agents
+        self.headless = bool(headless)
+        self.debug = bool(debug)
+        self.veh_ids = [f"truck_{i}" for i in range(self.num_agents)]
+        self._view_id: Optional[str] = None
+        self._focus_lock = threading.Lock()
+        self._pending_focus: Optional[int] = None
+        self._pending_unfollow = False
+        self.refresh()
+
+    def refresh(self):
+        """Reapply basic rendering and tracking configuration."""
+        self._setup_view()
+        self._setup_vehicles()
+
+    def _setup_view(self):
+        if self.headless:
+            return
+        try:
+            views = list(traci.gui.getIDList())
+            if views:
+                if self._view_id not in views:
+                    self._view_id = views[0]
+                if self._view_id:
+                    try:
+                        traci.gui.setZoom(self._view_id, 1200)
+                    except Exception:
+                        pass
+                    try:
+                        traci.gui.trackVehicle(self._view_id, self.veh_ids[0])
+                    except Exception:
+                        pass
+        except Exception:
+            self._view_id = None
+
+    def _setup_vehicles(self):
+        for vid in self.veh_ids:
+            try:
+                traci.vehicle.setColor(vid, (255, 0, 255, 255))
+            except Exception:
+                pass
+            try:
+                traci.vehicle.setSpeedMode(vid, 0)
+                traci.vehicle.setMaxSpeed(vid, 25.0)
+                traci.vehicle.setSpeed(vid, -1)
+            except Exception:
+                pass
+
+    def get_distance_km(self, agent_id: int) -> float:
+        vid = f"truck_{int(agent_id)}"
+        try:
+            dist = traci.vehicle.getDistance(vid)
+            if dist is None:
+                return 0.0
+            return max(0.0, float(dist) / 1000.0)
+        except Exception:
+            return 0.0
+
+    def focus_on(self, agent_id: Optional[int]):
+        with self._focus_lock:
+            if agent_id is None or int(agent_id) < 0:
+                self._pending_focus = None
+                self._pending_unfollow = True
+            else:
+                self._pending_focus = int(agent_id)
+                self._pending_unfollow = False
+
+    def apply_pending_focus(self):
+        if self.headless:
+            return
+        with self._focus_lock:
+            focus_idx = self._pending_focus
+            unfollow = self._pending_unfollow and focus_idx is None
+            self._pending_focus = None
+            self._pending_unfollow = False
+        if (focus_idx is None) and not unfollow:
+            return
+        if self._view_id is None:
+            self._setup_view()
+        if self._view_id is None:
+            return
+        try:
+            if focus_idx is None and unfollow:
+                if hasattr(traci.gui, 'trackOff'):
+                    try:
+                        traci.gui.trackOff(self._view_id)
+                        return
+                    except Exception:
+                        pass
+                for unfollow_arg in ("", None, "off", " "):
+                    try:
+                        traci.gui.trackVehicle(self._view_id, unfollow_arg)  # type: ignore[arg-type]
+                        return
+                    except Exception:
+                        continue
+            elif focus_idx is not None:
+                traci.gui.trackVehicle(self._view_id, self.veh_ids[focus_idx])
+        except Exception:
+            pass
+
+    def ended(self) -> bool:
+        try:
+            traci.simulation.getTime()
+            return False
+        except Exception:
+            return True
+
+    def close(self):
+        try:
+            traci.close()
         except Exception:
             pass
 
@@ -721,6 +808,10 @@ class TruckStatus:
     destination: str
     maintain: bool
     state: str
+    speed_m_s: Optional[float]
+    road_id: Optional[str]
+    lane_pos_m: Optional[float]
+    last_stop: Optional[str]
 
 
 class SumoInfoGUI:
@@ -783,6 +874,15 @@ class SumoInfoGUI:
                 idx = int(str(name).split('_')[-1])
             except Exception:
                 return
+            # If external tracker exposes a shared follow flag and it's off, unfocus
+            try:
+                follow_flag = getattr(self, "follow_flag", None)
+                if follow_flag is not None and callable(getattr(follow_flag, 'get', None)):
+                    if not bool(follow_flag.get()):
+                        self.on_focus(None)
+                        return
+            except Exception:
+                pass
             self.on_focus(idx)
 
     def _refresh(self):
@@ -900,9 +1000,13 @@ class SumoTrackerGUI:
         self._maybe_focus()
 
     def _maybe_focus(self):
-        if self._follow.get() and hasattr(self, "on_focus") and callable(self.on_focus):
+        if hasattr(self, "on_focus") and callable(self.on_focus):
             try:
-                self.on_focus(self._selected_idx)
+                if self._follow.get():
+                    self.on_focus(self._selected_idx)
+                else:
+                    # Explicitly request unfollow
+                    self.on_focus(None)
             except Exception:
                 pass
 
@@ -922,24 +1026,22 @@ class SumoTrackerGUI:
                 self._value_vars["Destination"].set(s.destination)
                 self._value_vars["Maintain"].set("Yes" if s.maintain else "No")
                 self._value_vars["State"].set(s.state)
-            # Live kinematics from SUMO
-            try:
-                vid = f"truck_{self._selected_idx}"
-                spd = traci.vehicle.getSpeed(vid)
-                road = traci.vehicle.getRoadID(vid)
-                lane_pos = traci.vehicle.getLanePosition(vid)
-                stops = traci.vehicle.getStops(vid)
-                last_stop = None
-                if stops:
-                    last = stops[-1]
-                    last_stop = f"{getattr(last,'stoppingPlaceID',None)} (arr={getattr(last,'arrival',None)})"
-                self._value_vars["Speed (m/s)"].set(f"{float(spd):.2f}")
-                self._value_vars["Road"].set(str(road))
-                self._value_vars["LanePos"].set(f"{float(lane_pos):.1f}")
-                self._value_vars["Last Stop"].set(last_stop or "-")
-            except Exception:
-                # Vehicle may be missing or SUMO headless
-                pass
+                if s.speed_m_s is None:
+                    self._value_vars["Speed (m/s)"].set("-")
+                else:
+                    self._value_vars["Speed (m/s)"].set(f"{s.speed_m_s:.2f}")
+                self._value_vars["Road"].set(s.road_id or "-")
+                if s.lane_pos_m is None:
+                    self._value_vars["LanePos"].set("-")
+                else:
+                    self._value_vars["LanePos"].set(f"{s.lane_pos_m:.1f}")
+                self._value_vars["Last Stop"].set(s.last_stop or "-")
+            else:
+                # No status available yet; reset fields
+                for key in ["Truck", "RUL", "Distance (km)", "Destination", "Maintain", "State",
+                            "Speed (m/s)", "Road", "LanePos", "Last Stop"]:
+                    self._value_vars[key].set("-")
+                self._value_vars["Truck"].set(f"truck_{self._selected_idx}")
         finally:
             if not self.stopped():
                 self.root.after(300, self._refresh)
@@ -962,7 +1064,7 @@ def parse_demo_args():
     parser.add_argument('--experiment_name', type=str, default='sumo_demo')
     parser.add_argument('--use_rul_agent', action='store_true', default=True)
     parser.add_argument('--rul_threshold', type=float, default=7)
-    parser.add_argument('--rul_state', action='store_false')  # policy trained without RUL in obs by default
+    parser.add_argument('--rul_state', action='store_true', default=False, help='Include RUL in observations (default: disabled)')
 
     # Checkpoint and SUMO
     parser.add_argument('--actor_dir', type=str, required=True, help='Directory containing actor.pt')
@@ -984,6 +1086,8 @@ def main():
     base_parser = get_config()
     # parse_known_args twice to allow mixing
     demo_args, _ = demo_parser.parse_known_args()
+
+    # Do not bind GUI traci here; env will rebind to GUI when use_sumo_gui=True
     all_args = base_parser.parse_known_args([])[0]
 
     # Hydrate fields from demo args
@@ -1050,11 +1154,12 @@ def main():
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    # Build envs (offline env used by policy)
-    envs = make_envs(all_args)
-    obs_space = envs.observation_space[0]
-    share_obs_space = envs.share_observation_space[0]
-    act_space = envs.action_space[0]
+    # Build SUMO-backed evaluation environment
+    all_args.use_sumo_gui = not demo_args.headless
+    env = async_scheduling_sumo(all_args)
+    obs_space = env.observation_space[0]
+    share_obs_space = env.share_observation_space[0]
+    act_space = env.action_space[0]
 
     # Ensure required policy flags have defaults
     for attr, default in [
@@ -1076,22 +1181,59 @@ def main():
     policy.actor.eval()
     print(f"Loaded actor from: {all_args.actor_dir}")
 
-    # Start SUMO demo world (with GUI)
-    sumo = SumoDemo(num_agents=all_args.num_agents, sumo_cfg=all_args.sumo_cfg, factory_count=50, headless=demo_args.headless, debug=getattr(all_args, 'debug', False))
+    # If using GUI, start SUMO immediately (on main thread) so the SUMO window appears,
+    # then rebind this module's traci to the GUI client so monitor/GUI can control it.
+    initial_obs = None
+    used_initial_reset = False
+    if all_args.use_sumo_gui:
+        try:
+            initial_obs = env.reset()
+            used_initial_reset = True
+            # Rebind to GUI traci so SumoMonitor and GUIs talk to the same TraCI session
+            try:
+                import traci as traci_client  # type: ignore
+                globals()['traci'] = traci_client
+            except Exception as exc:
+                print(f"[SUMO Demo] Warning: failed to bind GUI traci in render script: {exc}")
+            # Wait briefly for SUMO-GUI view to become available
+            try:
+                import time as _time
+                ready = False
+                for _ in range(30):  # up to ~3s
+                    try:
+                        views = list(traci.gui.getIDList())
+                        if views:
+                            print(f"[SUMO Demo] SUMO GUI ready (views={views})")
+                            ready = True
+                            break
+                    except Exception:
+                        pass
+                    _time.sleep(0.1)
+                if not ready:
+                    print("[SUMO Demo] Waiting for SUMO GUI view timed out; continuing")
+            except Exception:
+                pass
+        except Exception as exc:
+            print(f"[SUMO Demo] initial reset failed: {exc}")
+
+    # Visualisation helper (only affects GUI-mode)
+    monitor = SumoMonitor(num_agents=all_args.num_agents, headless=demo_args.headless, debug=getattr(all_args, 'debug', False))
 
     # Build status GUI and tracker GUI
     gui = None if demo_args.headless else SumoInfoGUI(num_agents=all_args.num_agents)
     tracker = None
     if gui is not None:
         # Connect GUI focus callback to SUMO camera
-        setattr(gui, 'on_focus', lambda idx: sumo.focus_on(idx))
+        setattr(gui, 'on_focus', lambda idx: monitor.focus_on(idx))
         # Secondary tracker window to follow a single agent
         tracker = SumoTrackerGUI(num_agents=all_args.num_agents, parent_root=gui.root)
-        setattr(tracker, 'on_focus', lambda idx: sumo.focus_on(idx))
-
-    # Access the underlying offline env to read RUL/state when available
-    # ScheduleEnv holds a list of envs, we run only one here
-    offline_env = envs.envs[0]
+        setattr(tracker, 'on_focus', lambda idx: monitor.focus_on(idx))
+        tracker._maybe_focus()
+        # Share the follow flag so list clicks respect toggle
+        try:
+            gui.follow_flag = tracker._follow
+        except Exception:
+            pass
 
     # RNN state and masks per-agent
     recurrent_N = getattr(all_args, 'recurrent_N', 1)
@@ -1105,243 +1247,142 @@ def main():
         statuses: List[TruckStatus] = []
         for i in range(all_args.num_agents):
             vid = f"truck_{i}"
-            # Ensure vehicle exists, then get distance via SUMO with clamping/caching
-            try:
-                sumo._ensure_vehicle(i)
-            except Exception:
-                pass
-            dist_km = sumo.get_distance_km(i)
-            # RUL from offline env for display only
+            dist_km = monitor.get_distance_km(i)
             rul_val = None
-            dest_display = None
-            maintain = False
-            state_str = "waiting"
+            if hasattr(env, 'rul_values'):
+                try:
+                    val = env.rul_values.get(i)
+                    if val is not None:
+                        rul_val = float(val)
+                except Exception:
+                    pass
+            dest_display = str(getattr(env, 'destinations', {}).get(i, '-'))
+            maintain = bool(getattr(env, 'maintaining', {}).get(i, False))
+            state_str = 'maintain' if maintain else 'waiting'
+            speed_val = None
+            road_id = None
+            lane_pos = None
+            last_stop_str = None
             try:
-                rul_val = float(offline_env.truck_agents[i].rul)
+                speed_val = float(traci.vehicle.getSpeed(vid))
             except Exception:
                 pass
-            # Destination: prefer offline env intended destination; show Workshop if maintaining
             try:
-                if hasattr(offline_env.truck_agents[i], 'state') and offline_env.truck_agents[i].state == 'maintain':
-                    maintain = True
-                    dest_display = 'Workshop'
-                else:
-                    dest_display = str(getattr(offline_env.truck_agents[i], 'destination', '-')) or sumo.destinations.get(i)
+                road_id = traci.vehicle.getRoadID(vid)
             except Exception:
-                dest_display = str(sumo.destinations.get(i) or '-')
-            # State: derive purely from SUMO kinematics so it changes every step
+                road_id = None
             try:
-                try:
-                    _ids = traci.vehicle.getIDList()
-                except Exception:
-                    _ids = []
-                if vid in _ids:
-                    if traci.vehicle.isStoppedParking(vid):
-                        state_str = 'arrived' if sumo._has_arrived(i) else 'waiting'
+                lane_pos = float(traci.vehicle.getLanePosition(vid))
+            except Exception:
+                lane_pos = None
+            try:
+                stops = traci.vehicle.getStops(vid)
+                if stops:
+                    last = stops[-1]
+                    last_stop_str = f"{getattr(last, 'stoppingPlaceID', None)} (arr={getattr(last, 'arrival', None)})"
+            except Exception:
+                last_stop_str = None
+            try:
+                if maintain:
+                    state_str = 'maintain'
+                elif getattr(env, '_arrived_operable')(i):
+                    state_str = 'waiting'
+                else:
+                    if (speed_val is not None) and (speed_val > 0.1):
+                        state_str = 'driving'
+                    elif traci.vehicle.isStoppedParking(vid):
+                        state_str = 'arrived'
                     else:
-                        spd = float(traci.vehicle.getSpeed(vid))
-                        state_str = 'driving' if spd > 0.1 else 'stopped'
-                else:
-                    state_str = 'missing'
+                        state_str = 'stopped'
             except Exception:
-                state_str = state_str or '-'
+                pass
             statuses.append(TruckStatus(
                 truck_id=vid,
                 rul=rul_val,
                 distance_km=dist_km,
                 destination=str(dest_display) if dest_display else "-",
                 maintain=maintain,
-                state=state_str
+                state=state_str,
+                speed_m_s=speed_val,
+                road_id=road_id,
+                lane_pos_m=lane_pos,
+                last_stop=last_stop_str
             ))
         return statuses
 
     def sim_loop():
+        nonlocal used_initial_reset, initial_obs
         try:
             episodes = all_args.episodes
             for ep in range(episodes):
                 if (gui is not None) and gui.stopped():
                     break
-                if sumo.ended():
+                if monitor.ended():
                     break
                 print(f"[SUMO Demo] Episode {ep+1}/{episodes}")
-                # Reset offline env and per-episode states
-                dict_obs_list = envs.reset()
-                # envs.reset returns array-like per env; use first
-                dict_obs = dict_obs_list[0]
-                rnn_states[:] = 0
-                masks[:] = 1
+                # Use the observations from the initial main-thread reset once to avoid a second reload
+                if used_initial_reset:
+                    dict_obs = initial_obs if isinstance(initial_obs, dict) else {}
+                    used_initial_reset = False
+                else:
+                    try:
+                        dict_obs = env.reset()
+                    except Exception as exc:
+                        print(f"[SUMO Demo] reset failed: {exc}")
+                        break
+                monitor.refresh()
+                monitor.apply_pending_focus()
+                rnn_states.fill(0.0)
+                masks.fill(1.0)
                 step_cnt = 0
-                # Proactively dispatch every truck once to break initial waiting deadlock
-                # Use a simple different factory from current position; maintenance -> Factory0
-                try:
-                    for i in range(all_args.num_agents):
-                        try:
-                            if offline_env.truck_agents[i].state == 'maintain':
-                                sumo.set_destination(agent_id=i, dest_index=0)
-                                continue
-                        except Exception:
-                            pass
-                        try:
-                            cur_pos = str(offline_env.truck_agents[i].position)
-                            cur_idx = int(cur_pos.replace('Factory', ''))
-                        except Exception:
-                            # fallback to a pseudo-random different index
-                            cur_idx = i % 50
-                        # Choose a deterministic different destination initially
-                        dest_idx = (cur_idx + 1) % 50
-                        # Snap to an existing parking area if the target doesn't exist
-                        try:
-                            pa = sumo._resolve_pa(dest_idx)
-                            if pa is None:
-                                continue
-                        except Exception:
-                            pass
-                        sumo.set_destination(agent_id=i, dest_index=dest_idx)
-                        # Strong nudge to depart from initial parking
-                        try:
-                            vid = f"truck_{i}"
-                            traci.vehicle.setSpeedMode(vid, 0)  # permissive to leave parking
-                            traci.vehicle.resume(vid)
-                            traci.vehicle.setSpeed(vid, -1)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                # Helper: choose nearest different factory if action equals current pos
-                def pick_moving_dest(agent_id: int, proposed_idx: int) -> int:
-                    try:
-                        cur_pos = offline_env.truck_agents[int(agent_id)].position
-                        cur_idx = int(str(cur_pos).replace('Factory',''))
-                        if int(proposed_idx) != cur_idx:
-                            return int(proposed_idx)
-                        # Find nearest different destination
-                        md = offline_env.truck_agents[int(agent_id)].map_distance
-                        candidates = []
-                        for k, v in md.items():
-                            if not str(k).startswith(cur_pos + '_to_'):
-                                continue
-                            try:
-                                tgt = str(k).split('_to_')[1]
-                                tgt_idx = int(tgt.replace('Factory',''))
-                                if tgt_idx != cur_idx:
-                                    candidates.append((float(v), tgt_idx))
-                            except Exception:
-                                continue
-                        if candidates:
-                            candidates.sort(key=lambda x: x[0])
-                            return int(candidates[0][1])
-                    except Exception:
-                        pass
-                    # default fallback
-                    return (int(proposed_idx) + 1) % 50
+                done_flag = False
 
-                # If we have any operable agents at t=0, pick an initial destination
-                if isinstance(dict_obs, dict) and len(dict_obs) > 0:
-                    agent_ids = sorted(list(dict_obs.keys()))
-                    obs_batch = np.stack([dict_obs[i] for i in agent_ids], axis=0)
-                    rnn_batch = rnn_states[agent_ids]
-                    mask_batch = masks[agent_ids]
-                    if getattr(all_args, 'debug', False):
+                while not done_flag and step_cnt < all_args.max_steps:
+                    monitor.apply_pending_focus()
+                    if (gui is not None):
+                        _statuses = _build_statuses()
+                        gui.update_data(_statuses)
                         try:
-                            print(f"[RL] t={traci.simulation.getTime()} initial decision for agents={agent_ids}")
+                            tracker.update_data(_statuses)
                         except Exception:
-                            print(f"[RL] initial decision for agents={agent_ids}")
-                        print(f"[RL] obs.shape={obs_batch.shape} rnn.shape={rnn_batch.shape} mask.shape={mask_batch.shape}")
-                    with torch.no_grad():
-                        obs_t = torch.from_numpy(obs_batch).to(device=device, dtype=torch.float32)
-                        rnn_t = torch.from_numpy(rnn_batch).to(device=device, dtype=torch.float32)
-                        mask_t = torch.from_numpy(mask_batch).to(device=device, dtype=torch.float32)
-                        actions_t, _, new_rnn_t = policy.actor(obs_t, rnn_t, mask_t, available_actions=None, deterministic=True)
-                    new_rnn_np = new_rnn_t.detach().cpu().numpy()
-                    actions_np = actions_t.detach().cpu().numpy().astype(np.int64).reshape(-1)
-                    if getattr(all_args, 'debug', False):
-                        print(f"[RL] actions={actions_np.tolist()}")
-                    for idx, agent_id in enumerate(agent_ids):
-                        rnn_states[agent_id] = new_rnn_np[idx]
-                        dest_idx = pick_moving_dest(int(agent_id), int(actions_np[idx]))
-                        # Maintenance maps to Factory0
-                        if (not all_args.use_rul_agent) and dest_idx >= 50:
-                            dest_idx = 0
-                        if getattr(all_args, 'debug', False):
-                            try:
-                                cur_pos = str(offline_env.truck_agents[int(agent_id)].position)
-                            except Exception:
-                                cur_pos = "?"
-                            print(f"[RL->SUMO] agent={int(agent_id)} action={int(actions_np[idx])} mapped_dest={dest_idx} cur_pos={cur_pos}")
-                        sumo.set_destination(agent_id=int(agent_id), dest_index=dest_idx)
-                # Kickstart: step SUMO a bit after initial dispatch so trucks actually depart
-                # and GUI readings begin to change even before first operable arrival
-                for _ in range(60):
+                            pass
                     if (gui is not None) and gui.stopped():
                         stop_flag["stop"] = True
                         break
-                    if sumo.ended():
+                    if monitor.ended():
                         stop_flag["stop"] = True
                         break
+
                     try:
                         if traci.simulation.getTime() >= all_args.sim_time_limit:
                             if getattr(all_args, 'debug', False):
-                                print(f"[LIM] Reached sim_time_limit={all_args.sim_time_limit} during kickstart")
+                                print(f"[SUMO Demo] reached sim_time_limit={all_args.sim_time_limit}; stopping episode")
                             stop_flag["stop"] = True
                             break
                     except Exception:
                         pass
-                    sumo.step(1)
-                    # Nudge any parked trucks to resume during kickstart
-                    for i in range(all_args.num_agents):
-                        try:
-                            vid = f"truck_{i}"
-                            if traci.vehicle.isStoppedParking(vid):
-                                traci.vehicle.setSpeedMode(vid, 0)
-                                traci.vehicle.resume(vid)
-                        except Exception:
-                            pass
-                    if gui is not None:
-                        _d = _build_statuses()
-                        gui.update_data(_d)
-                        try:
-                            tracker.update_data(_d)
-                        except Exception:
-                            pass
-                while True:
-                    if (gui is not None) and gui.stopped():
-                        stop_flag["stop"] = True
-                        break
-                    if sumo.ended():
-                        stop_flag["stop"] = True
-                        break
-                    try:
-                        if traci.simulation.getTime() >= all_args.sim_time_limit:
-                            if getattr(all_args, 'debug', False):
-                                print(f"[LIM] Reached sim_time_limit={all_args.sim_time_limit}; stopping episode")
-                            stop_flag["stop"] = True
-                            break
-                    except Exception:
-                        pass
-                    # Always push live GUI updates
-                    if gui is not None:
-                        _d = _build_statuses()
-                        gui.update_data(_d)
-                        try:
-                            tracker.update_data(_d)
-                        except Exception:
-                            pass
-                    # Ensure dict_obs is a dict (when no one is operable it may be empty or None)
+
                     if not isinstance(dict_obs, dict):
                         dict_obs = {}
-                    # Compute actions for currently operable agents
-                    act_dict = {}
-                    if isinstance(dict_obs, dict) and len(dict_obs) > 0:
-                        agent_ids = sorted(list(dict_obs.keys()))
-                        obs_batch = np.stack([dict_obs[i] for i in agent_ids], axis=0)
-                        rnn_batch = rnn_states[agent_ids]
-                        mask_batch = masks[agent_ids]
+
+                    operable_ids = sorted(dict_obs.keys())
+                    masks[:, 0] = 0.0
+                    for aid in operable_ids:
+                        masks[aid] = 1.0
+                    inactive_ids = [idx for idx in range(all_args.num_agents) if idx not in operable_ids]
+                    for idx in inactive_ids:
+                        rnn_states[idx] = 0.0
+
+                    act_dict: Dict[int, int] = {}
+                    if operable_ids:
+                        obs_batch = np.stack([dict_obs[i] for i in operable_ids], axis=0)
+                        rnn_batch = rnn_states[operable_ids]
+                        mask_batch = masks[operable_ids]
                         if getattr(all_args, 'debug', False):
                             try:
-                                print(f"[RL] t={traci.simulation.getTime()} step decision for agents={agent_ids}")
+                                print(f"[RL] t={traci.simulation.getTime()} decision for {operable_ids}")
                             except Exception:
-                                print(f"[RL] step decision for agents={agent_ids}")
-                            print(f"[RL] obs.shape={obs_batch.shape} rnn.shape={rnn_batch.shape} mask.shape={mask_batch.shape}")
+                                print(f"[RL] decision for {operable_ids}")
                         with torch.no_grad():
                             obs_t = torch.from_numpy(obs_batch).to(device=device, dtype=torch.float32)
                             rnn_t = torch.from_numpy(rnn_batch).to(device=device, dtype=torch.float32)
@@ -1349,190 +1390,40 @@ def main():
                             actions_t, _, new_rnn_t = policy.actor(obs_t, rnn_t, mask_t, available_actions=None, deterministic=True)
                         new_rnn_np = new_rnn_t.detach().cpu().numpy()
                         actions_np = actions_t.detach().cpu().numpy().astype(np.int64).reshape(-1)
-                        if getattr(all_args, 'debug', False):
-                            print(f"[RL] actions={actions_np.tolist()}")
-                        for idx, agent_id in enumerate(agent_ids):
+                        for idx, agent_id in enumerate(operable_ids):
                             rnn_states[agent_id] = new_rnn_np[idx]
                             act_dict[int(agent_id)] = int(actions_np[idx])
 
-                    # Mirror newly chosen actions to SUMO (if any) and detect wait actions
-                    wait_detected = False
-                    for agent_id, dest_idx in act_dict.items():
-                        # If offline env truck is maintaining, always route to Factory0 and skip other moves
-                        try:
-                            if offline_env.truck_agents[agent_id].state == 'maintain':
-                                if getattr(all_args, 'debug', False):
-                                    print(f"[RL->SUMO] agent={agent_id} in maintain: route to Factory0")
-                                sumo.set_destination(agent_id=agent_id, dest_index=0)
-                                continue
-                        except Exception:
-                            pass
-                        # If action equals current position, pick a nearby different factory to visualize movement
-                        move_idx = pick_moving_dest(int(agent_id), int(dest_idx))
-                        # Consider wait only if mapped move equals current position
-                        try:
-                            cur_pos = str(offline_env.truck_agents[int(agent_id)].position)
-                            cur_idx = int(cur_pos.replace('Factory',''))
-                            if int(move_idx) == cur_idx:
-                                wait_detected = True
-                        except Exception:
-                            pass
-                        if getattr(all_args, 'debug', False):
-                            try:
-                                cur_pos = str(offline_env.truck_agents[int(agent_id)].position)
-                            except Exception:
-                                cur_pos = "?"
-                            print(f"[RL->SUMO] agent={agent_id} action={dest_idx} mapped_move={move_idx} cur_pos={cur_pos}")
-                        sumo.set_destination(agent_id=agent_id, dest_index=move_idx)
-                        # Strong nudge to depart if currently parked
-                        try:
-                            vid = f"truck_{agent_id}"
-                            if traci.vehicle.isStoppedParking(vid):
-                                traci.vehicle.setSpeedMode(vid, 0)
-                                traci.vehicle.resume(vid)
-                                traci.vehicle.setSpeed(vid, -1)
-                        except Exception:
-                            pass
-                    # Advance SUMO until at least one truck has arrived (operable)
-                    operable = []
-                    safety_ticks = 0
-                    # If we detected a wait/no-op, simulate 120s and proceed without waiting for arrival
-                    if wait_detected:
-                        if getattr(all_args, 'debug', False):
-                            print(f"[SIM] wait/no-op detected; fast-forward 120 ticks")
-                        for _ in range(120):
-                            try:
-                                if traci.simulation.getTime() >= all_args.sim_time_limit:
-                                    if getattr(all_args, 'debug', False):
-                                        print(f"[LIM] Reached sim_time_limit={all_args.sim_time_limit} during fast-forward")
-                                    stop_flag["stop"] = True
-                                    break
-                            except Exception:
-                                pass
-                            sumo.step(1)
-                            if sumo.ended():
-                                stop_flag["stop"] = True
-                                break
-                            if gui is not None:
-                                _d = _build_statuses()
-                                gui.update_data(_d)
-                                try:
-                                    tracker.update_data(_d)
-                                except Exception:
-                                    pass
-                    else:
-                        while len(operable) == 0 and not ((gui is not None) and gui.stopped()):
-                            try:
-                                if traci.simulation.getTime() >= all_args.sim_time_limit:
-                                    if getattr(all_args, 'debug', False):
-                                        print(f"[LIM] Reached sim_time_limit={all_args.sim_time_limit} while waiting for arrival")
-                                    stop_flag["stop"] = True
-                                    break
-                            except Exception:
-                                pass
-                            sumo.step(1)
-                            if sumo.ended():
-                                stop_flag["stop"] = True
-                                break
-                            # Nudge any parked trucks to resume
-                            for i in range(all_args.num_agents):
-                                try:
-                                    vid = f"truck_{i}"
-                                    if traci.vehicle.isStoppedParking(vid):
-                                        traci.vehicle.setSpeedMode(vid, 0)
-                                        traci.vehicle.resume(vid)
-                                except Exception:
-                                    pass
-                            operable = sumo.operable_agents()
-                            safety_ticks += 1
-                            if getattr(all_args, 'debug', False) and (safety_ticks % 100 == 0):
-                                try:
-                                    t_now = traci.simulation.getTime()
-                                except Exception:
-                                    t_now = '-'
-                                print(f"[SIM] t={t_now} waiting for arrival... ticks={safety_ticks}")
-                            if getattr(all_args, 'debug', False) and (safety_ticks % 300 == 0):
-                                # Dump detailed status for all trucks occasionally
-                                for aid in range(all_args.num_agents):
-                                    sumo._dump_vehicle_status(aid)
-                            # Keep GUI live while waiting for first arrival
-                            if gui is not None:
-                                _d = _build_statuses()
-                                gui.update_data(_d)
-                                try:
-                                    tracker.update_data(_d)
-                                except Exception:
-                                    pass
-                        # Periodically push GUI updates while waiting
-                        if gui is not None:
-                            _d = _build_statuses()
-                            gui.update_data(_d)
-                            try:
-                                tracker.update_data(_d)
-                            except Exception:
-                                pass
-
-                        if getattr(all_args, 'debug', False):
-                            try:
-                                t_now = traci.simulation.getTime()
-                            except Exception:
-                                t_now = '-'
-                            print(f"[SIM] t={t_now} first arrival after ticks={safety_ticks}; operable={operable}")
-
-                        if safety_ticks > 10000:
-                            break
-
-                    # Step the offline policy env
-                    if sumo.ended():
+                    try:
+                        dict_obs, rewards, dones, _ = env.step(act_dict)
+                    except Exception as exc:
+                        print(f"[SUMO Demo] env.step error: {exc}")
+                        stop_flag["stop"] = True
                         break
-                    action_env = [act_dict]
-                    dict_obs_list, rewards, dones, infos = envs.step(action_env)
-                    dict_obs = dict_obs_list[0]
-                    if getattr(all_args, 'debug', False):
+
+                    step_cnt += 1
+
+                    if (gui is not None):
+                        _statuses = _build_statuses()
+                        gui.update_data(_statuses)
                         try:
-                            t_now = traci.simulation.getTime()
-                        except Exception:
-                            t_now = '-'
-                        print(f"[ENV] t={t_now} env.step done; next_operable_keys={sorted(list(dict_obs.keys())) if isinstance(dict_obs, dict) else 'NA'}")
-                        try:
-                            # rewards is a list-like of dicts or arrays; print compact summary
-                            print(f"[ENV] rewards_summary={type(rewards)} dones_summary={dones}")
-                        except Exception:
-                            pass
-                    # Push an update after env step
-                    if gui is not None:
-                        _d = _build_statuses()
-                        gui.update_data(_d)
-                        try:
-                            tracker.update_data(_d)
+                            tracker.update_data(_statuses)
                         except Exception:
                             pass
 
-                    # Termination conditions
-                    done_flag = False
-                    for env_done in dones:
-                        if 'bool' in env_done.__class__.__name__:
-                            if env_done:
-                                done_flag = True
-                        else:
-                            if np.all(env_done):
-                                done_flag = True
-                    step_cnt += 1
-                    if (step_cnt >= all_args.max_steps) or done_flag:
+                    if isinstance(dones, np.ndarray):
+                        done_flag = bool(np.all(dones))
+                    else:
+                        done_flag = bool(dones)
+                    if (gui is not None) and gui.stopped():
+                        stop_flag["stop"] = True
                         break
 
                 print(f"[SUMO Demo] Episode {ep+1} finished after {step_cnt} steps")
                 if stop_flag["stop"]:
                     break
         finally:
-            try:
-                sumo.close()
-            except Exception:
-                pass
-            try:
-                envs.close()
-            except Exception:
-                pass
+            monitor.close()
 
     # Run simulation in a background thread and the GUI mainloop in the main thread
     if gui is None:
