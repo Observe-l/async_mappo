@@ -8,7 +8,7 @@ import random
 
 class Truck(object):
     def __init__(self, truck_id:str = 'truck_0', capacity:float = 5.0, weight:float = 0.0,\
-                 state:str = 'waiting', product:str = 'P1', eng_time:int = 500, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
+                 state:str = 'waiting', product:str = 'P1', eng_time:int = 100, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
         self.id = truck_id
         self.capacity = capacity
         # Time delay of loading and unloading

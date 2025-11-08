@@ -4,6 +4,8 @@ from collections import defaultdict
 from pathlib import Path
 from csv import writer
 from onpolicy.envs.rul_schedule.demo_truck import Truck
+import time
+from typing import Optional
 from onpolicy.envs.rul_schedule.factory import Factory, Producer
 from onpolicy.envs.rul_schedule.rul_gen import predictor
 import datetime
@@ -67,13 +69,18 @@ class async_scheduling(object):
         self.done = np.array([False for _ in range(self.truck_num)])
         return obs
 
-    def step(self, action_dict:dict):
+    def step(self, action_dict:dict, max_sumo_seconds: Optional[float] = None):
         # Set action
         self._set_action(action_dict)
-        self.record_debug(self.episode_len, action_dict)
+        # self.record_debug(self.episode_len, action_dict)
         # Run the sumo until any of the agents are avaiable
         sumo_flag = True
         step_length = 0
+        # For responsive GUI: limit the internal stepping by SUMO time if requested
+        try:
+            start_sim_t = traci.simulation.getTime()
+        except Exception:
+            start_sim_t = None
         while sumo_flag:
             self.producer.produce_step()
             traci.simulationStep()
@@ -86,10 +93,18 @@ class async_scheduling(object):
                     if self.use_rul_agent and tmp_truck.rul < self.rul_threshold:
                         tmp_truck.maintain()
                         # Record when make maintain
-                        maintain_dict = {int(tmp_truck.id.split('_')[1]): self.factory_num}
-                        self.record_debug(self.episode_len, maintain_dict)
+                        # maintain_dict = {int(tmp_truck.id.split('_')[1]): self.factory_num}
+                        # self.record_debug(self.episode_len, maintain_dict)
                     else:
                         sumo_flag = False
+            # If chunked stepping requested, return control after the budget is reached
+            if max_sumo_seconds is not None and start_sim_t is not None and sumo_flag:
+                try:
+                    cur_t = traci.simulation.getTime()
+                except Exception:
+                    cur_t = start_sim_t
+                if (cur_t - start_sim_t) >= max_sumo_seconds:
+                    break
         
         # Get observation, reward. record the result
         obs = self._get_obs()
@@ -102,6 +117,71 @@ class async_scheduling(object):
         if self.episode_len >= 7 * 24 * 3600:
             self.done = np.array([True for _ in range(self.truck_num)])
         return obs, rewards, self.done, {}
+
+    # ---------------- GUI incremental helpers (non-RL logic change) -----------------
+    def gui_prepare_actions(self, action_dict:dict):
+        """Apply actions and record debug without running the internal while loop.
+        This preserves original RL semantics (decisions only when trucks operable) while
+        allowing the GUI to incrementally advance SUMO until next decision point.
+        """
+        self._set_action(action_dict)
+        self._gui_waiting = True
+        self._gui_step_length = 0
+        self._gui_last_actions = action_dict
+
+    def gui_tick_until_operable(self, max_sim_seconds: float = 10.0):
+        """Advance SUMO by up to max_sim_seconds of SUMO time until an operable truck appears
+        (or maintenance triggers). Returns True when ready for next RL decision, else False
+        if the SUMO-time budget was exhausted.
+        """
+        if not getattr(self, '_gui_waiting', False):
+            return True  # Not in waiting phase
+        try:
+            start_t = traci.simulation.getTime()
+        except Exception:
+            start_t = None
+        while True:
+            self.producer.produce_step()
+            traci.simulationStep()
+            self.episode_len += 1
+            self._gui_step_length += 1
+            # Update RUL & potential maintenance
+            ready_flag = False
+            for tmp_truck in self.truck_agents:
+                if tmp_truck.operable_flag:
+                    tmp_truck.rul = self.predictor.predict(tmp_truck.eng_obs)
+                    if self.use_rul_agent and tmp_truck.rul < self.rul_threshold:
+                        tmp_truck.maintain()
+                        # maintain_dict = {int(tmp_truck.id.split('_')[1]): self.factory_num}
+                        # self.record_debug(self.episode_len, maintain_dict)
+                    else:
+                        ready_flag = True
+            if ready_flag:
+                return True
+            # Check SUMO-time budget
+            if start_t is not None:
+                try:
+                    cur_t = traci.simulation.getTime()
+                except Exception:
+                    cur_t = start_t
+                if (cur_t - start_t) >= max_sim_seconds:
+                    return False
+
+    def gui_finalize_step(self):
+        """Finish the logical environment step once operable trucks are available.
+        Computes obs, rewards and performs logging identical to original step logic.
+        """
+        if not getattr(self, '_gui_waiting', False):
+            # Nothing to finalize
+            return self._get_obs(), self._get_reward(), self.done
+        obs = self._get_obs()
+        rewards = self._get_reward()
+        self.flag_reset()
+        self.save_results(self.episode_len, getattr(self, '_gui_step_length', 0), getattr(self, '_gui_last_actions', {}), rewards)
+        if self.episode_len >= 7 * 24 * 3600:
+            self.done = np.array([True for _ in range(self.truck_num)])
+        self._gui_waiting = False
+        return obs, rewards, self.done
 
     
     def _set_action(self, action_dict:dict):

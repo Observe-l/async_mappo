@@ -267,12 +267,6 @@ def run_demo_debug(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, m
                            use_recurrent_policy=use_recurrent_policy,
                            recurrent_N=recurrent_N)
 
-    # Avoid a background SUMO stepper to prevent concurrent libsumo calls.
-    stop_evt = threading.Event()
-    stepper = None
-
-    # Debug mode only (no GUI threading here)
-
     steps = 0
     try:
         while steps < max_steps:
@@ -288,18 +282,14 @@ def run_demo_debug(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, m
                     if env.use_rul_agent:
                         target_label = f"Factory{act}"
                     else:
-                        if act == env.factory_num:
-                            target_label = "MAINTAIN"
-                        else:
-                            target_label = f"Factory{act}"
+                        target_label = "MAINTAIN" if act == env.factory_num else f"Factory{act}"
                     dec_parts.append(f"agent{aid}->{target_label}")
                 if dec_parts:
                     print("decisions: " + ", ".join(dec_parts))
-            # Step environment logical time; SUMO animation runs in background
+            # Step environment logical time; SUMO calls are within env
             obs, rew, done, _info = env.step(actions)
             steps += 1
             if debug:
-                # Print concise live status
                 parts = [f"step={steps}"]
                 try:
                     sim_t = traci.simulation.getTime()
@@ -320,7 +310,6 @@ def run_demo_debug(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, m
                 print("All trucks done; exiting.")
                 break
     finally:
-        stop_evt.set()
         try:
             traci.close()
         except Exception:
@@ -359,6 +348,10 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
     sel_box = ttk.Combobox(root, textvariable=sel_var, values=truck_ids, state="readonly")
     sel_box.grid(row=0, column=1, sticky="ew")
 
+    # Camera follow toggle
+    cam_follow_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(root, text="Camera follow", variable=cam_follow_var, command=lambda: update_camera()).grid(row=0, column=2, padx=8, sticky="w")
+
     # Info vars
     status_var = tk.StringVar(value="-")
     dist_var = tk.StringVar(value="0.0 m")
@@ -391,7 +384,7 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
         tree.insert("", "end", iid=f"truck_{i}", values=(f"truck_{i}", "-", "0.0", "-", "-"))
 
     def update_camera():
-        if env.use_gui:
+        if env.use_gui and cam_follow_var.get():
             try:
                 views = list(traci.gui.getIDList())
                 if views:
@@ -402,55 +395,14 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
     sel_box.bind("<<ComboboxSelected>>", lambda e: update_camera())
 
     steps = 0
+    state = {"waiting": False}  # GUI two-phase loop state
 
-    def step_loop():
-        nonlocal obs, steps
-        if steps >= max_steps:
-            finish("Max steps reached")
-            return
-        # Prepare actions
-        actions: Dict[int, int] = {}
-        for aid, o in obs.items():
-            act = policy.act(np.asarray(o, dtype=np.float32))
-            actions[int(aid)] = int(act)
-        if debug:
-            dec_parts = []
-            for aid, act in actions.items():
-                if env.use_rul_agent:
-                    target_label = f"Factory{act}"
-                else:
-                    if act == env.factory_num:
-                        target_label = "MAINTAIN"
-                    else:
-                        target_label = f"Factory{act}"
-                dec_parts.append(f"agent{aid}->{target_label}")
-            if dec_parts:
-                print("decisions: " + ", ".join(dec_parts))
-        try:
-            obs, rew, done, _info = env.step(actions)
-        except Exception as e:
-            print(f"Env step error: {e}")
-            finish("Env step error")
-            return
-        steps += 1
-        if debug:
-            parts = [f"step={steps}"]
-            try:
-                sim_t = traci.simulation.getTime()
-                parts.append(f"t={sim_t:.1f}s")
-            except Exception:
-                pass
-            for i in range(env.truck_num):
-                vid = f"truck_{i}"
-                t = env.truck_agents[i]
-                try:
-                    spd = traci.vehicle.getSpeed(vid)
-                    road = traci.vehicle.getRoadID(vid)
-                except Exception:
-                    spd, road = 0.0, "-"
-                parts.append(f"{vid}:{t.state}@{t.destination} d={t.total_distance:.1f} v={spd:.2f} road={road}")
-            print(" | ".join(parts))
-        # Update UI panels
+    # Only refresh GUI info/camera every N seconds of SUMO simulation time
+    GUI_UPDATE_INTERVAL_S = 50.0
+    next_gui_update_time = 0.0
+
+    def refresh_info_panels():
+        """Update the detailed panel and summary table once."""
         try:
             tid = sel_var.get()
             idx = int(tid.split("_")[-1])
@@ -475,10 +427,88 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
             except Exception:
                 road_id = "-"
             tree.item(vid, values=(vid, t.state, f"{t.total_distance:.1f}", t.destination, road_id))
-        update_camera()
-        if bool(np.all(done)):
-            finish("All trucks done")
+
+    def step_loop():
+        nonlocal obs, steps, next_gui_update_time
+        if steps >= max_steps:
+            finish("Max steps reached")
             return
+        # Phase 1: issue actions when trucks are operable (obs non-empty) and not waiting
+        if not state["waiting"]:
+            if obs:  # Only act when there are operable trucks
+                actions: Dict[int, int] = {}
+                for aid, o in obs.items():
+                    act = policy.act(np.asarray(o, dtype=np.float32))
+                    actions[int(aid)] = int(act)
+                if debug and actions:
+                    dec_parts = []
+                    for aid, act in actions.items():
+                        if env.use_rul_agent:
+                            target_label = f"Factory{act}"
+                        else:
+                            if act == env.factory_num:
+                                target_label = "MAINTAIN"
+                            else:
+                                target_label = f"Factory{act}"
+                        dec_parts.append(f"agent{aid}->{target_label}")
+                    if dec_parts:
+                        print("decisions: " + ", ".join(dec_parts))
+                try:
+                    env.gui_prepare_actions(actions)
+                except Exception as e:
+                    print(f"Env prepare error: {e}")
+                    finish("Env prepare error")
+                    return
+                state["waiting"] = True
+        else:
+            # Phase 2: advance simulation incrementally until next decision point
+            try:
+                    # Advance up to a larger chunk of SUMO time (e.g., 30s) for faster progression.
+                    ready = env.gui_tick_until_operable(max_sim_seconds=30.0)
+            except Exception as e:
+                print(f"Env tick error: {e}")
+                finish("Env tick error")
+                return
+            if ready:
+                try:
+                    obs, rew, done = env.gui_finalize_step()
+                except Exception as e:
+                    print(f"Env finalize error: {e}")
+                    finish("Env finalize error")
+                    return
+                steps += 1
+                state["waiting"] = False
+                if debug:
+                    parts = [f"step={steps}"]
+                    try:
+                        sim_t_dbg = traci.simulation.getTime()
+                        parts.append(f"t={sim_t_dbg:.1f}s")
+                    except Exception:
+                        pass
+                    for i in range(env.truck_num):
+                        vid = f"truck_{i}"
+                        t_agent = env.truck_agents[i]
+                        try:
+                            spd = traci.vehicle.getSpeed(vid)
+                            road = traci.vehicle.getRoadID(vid)
+                        except Exception:
+                            spd, road = 0.0, "-"
+                        parts.append(f"{vid}:{t_agent.state}@{t_agent.destination} d={t_agent.total_distance:.1f} v={spd:.2f} road={road}")
+                    print(" | ".join(parts))
+                if bool(np.all(done)):
+                    finish("All trucks done")
+                    return
+        # Periodic GUI refresh (every 50s SUMO time)
+        try:
+            sim_t = traci.simulation.getTime()
+        except Exception:
+            sim_t = 0.0
+        if next_gui_update_time <= 0.0:
+            next_gui_update_time = ((sim_t // GUI_UPDATE_INTERVAL_S) + 1) * GUI_UPDATE_INTERVAL_S
+        if sim_t >= next_gui_update_time:
+            refresh_info_panels()
+            update_camera()
+            next_gui_update_time += GUI_UPDATE_INTERVAL_S
         root.after(step_interval_ms, step_loop)
 
     def finish(msg: str):
@@ -493,6 +523,7 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
             pass
 
     # Kick off loop
+    refresh_info_panels()
     update_camera()
     root.after(step_interval_ms, step_loop)
     try:
