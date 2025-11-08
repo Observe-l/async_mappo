@@ -1,10 +1,14 @@
 import numpy as np
-import libsumo as traci
+# Prefer libsumo if available; otherwise fall back to traci
+try:
+    import libsumo as traci
+except Exception:
+    import traci  # type: ignore
 import random
 
 class Truck(object):
     def __init__(self, truck_id:str = 'truck_0', capacity:float = 5.0, weight:float = 0.0,\
-                 state:str = 'waiting', product:str = 'P1', eng_time:int = 500, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None) -> None:
+                 state:str = 'waiting', product:str = 'P1', eng_time:int = 500, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
         self.id = truck_id
         self.capacity = capacity
         # Time delay of loading and unloading
@@ -12,6 +16,9 @@ class Truck(object):
         # Read data from sumo
         self.map_time = map_data['time']
         self.map_distance = map_data['distance']
+        # Mapping from FactoryX -> edgeID for routing
+        self.factory_edge = factory_edge
+        self.final_factory = ['Factory45', 'Factory46', 'Factory47', 'Factory48', 'Factory49']
         # PredM parameter
         self.maintain_time = maintain_time
         self.broken_time = broken_time
@@ -91,7 +98,10 @@ class Truck(object):
         # Random select a position after reset the truck
         self.route = random.choice(list(self.map_distance.keys()))
         self.position, self.destination = self.route.split('_to_')
-        self.travel_time = self.map_time[self.route]
+        try:
+            self.travel_time = self.map_time[self.route]
+        except:
+            self.travel_time = 0
         self.travel_distance = self.map_distance[self.route]
         # Use driving time to indicate whether it it broken or not
         self.driving_time = 0
@@ -136,11 +146,11 @@ class Truck(object):
         self.position = parking_state.stoppingPlaceID
 
         # Check the truck position in SUMO
-        if parking_state.arrival < 0:
-            self.state = 'delivery'
-            self.operable_flag = False
-            if len(tmp_pk)>1:
-                self.truck_resume()
+        # if parking_state.arrival < 0:
+        #     self.state = 'delivery'
+        #     self.operable_flag = False
+        #     if len(tmp_pk)>1:
+        #         self.truck_resume()
         # Update the waiting time of the truck in the waiting state
         if self.state == 'waiting':
             if self.waiting_time > 0:
@@ -170,9 +180,14 @@ class Truck(object):
                 if self.weight == 0:
                     self.state = 'waiting'
                     self.operable_flag = True
+                    if self.position in self.final_factory:
+                        next_destination = f'Factory{random.randint(0,44)}'
+                        self.delivery(next_destination)
                 else:
                     self.state = 'arrived'
                     self.operable_flag = False
+            elif len(tmp_pk)>1:
+                self.truck_resume()
             '''Update the engine state'''
             self.driving_time += 1
             if self.driving_time % self.eng_time == 0:
@@ -193,6 +208,10 @@ class Truck(object):
             self.recover_time += 1
             if self.recover_time >= self.maintain_time:
                 self.recover()
+        
+        # if self.operable_flag and self.weight == 0 and self.position in self.final_factory:
+        #     next_destination = f'Factory{random.randint(0,44)}'
+        #     self.delivery(next_destination)
     
     def delivery(self, destination:str) -> None:
         '''
@@ -218,12 +237,8 @@ class Truck(object):
             traci.vehicle.setParkingAreaStop(vehID=self.id, stopID=self.destination)
         except:
             try:
-                # print(f'{self.id}, position:{self.position}, destination:{self.destination}, parking: {traci.vehicle.getStops(vehID=self.id)}, state: {self.state}')
-                # print(f'weight: {self.weight}, mdp state: {self.mk_state}')
                 traci.vehicle.remove(vehID=self.id)
             except:
-                # print(f'{self.id} has been deleted')
-                # print(f'weight: {self.weight}, mdp state: {self.mk_state}')
                 pass
             traci.vehicle.add(vehID=self.id,routeID=self.destination + '_to_'+ self.destination, typeID='truck')
             traci.vehicle.setParkingAreaStop(vehID=self.id,stopID=self.destination)

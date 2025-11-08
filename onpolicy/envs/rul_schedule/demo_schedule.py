@@ -9,7 +9,11 @@ from onpolicy.envs.rul_schedule.rul_gen import predictor
 import datetime
 import random
 import string
-import libsumo as traci
+# Prefer libsumo if available; otherwise fall back to traci (pure-Python)
+try:
+    import libsumo as traci
+except Exception:
+    import traci  # type: ignore
 
 class async_scheduling(object):
     def __init__(self, args):
@@ -18,6 +22,7 @@ class async_scheduling(object):
         self.use_rul_agent = args.use_rul_agent
         self.rul_threshold = args.rul_threshold
         self.rul_state = args.rul_state
+        self.use_gui = args.use_gui
         print("RUL threshold: ", self.rul_threshold)
 
         self.init_env()
@@ -71,6 +76,7 @@ class async_scheduling(object):
         step_length = 0
         while sumo_flag:
             self.producer.produce_step()
+            traci.simulationStep()
             # sumo_flag = not any([tmp_truck.operable_flag for tmp_truck in self.truck_agents])
             step_length += 1
             self.episode_len += 1
@@ -214,7 +220,24 @@ class async_scheduling(object):
     def init_env(self):
         '''Generate trucks and factories'''
         map_data = np.load("onpolicy/envs/rul_schedule/50f.npy",allow_pickle=True).item()
-        self.truck_agents = [Truck(truck_id=f'truck_{i}', map_data=map_data) for i in range(self.truck_num)]
+        self._init_sumo()
+        # Build Factory -> edgeID mapping for routing in SUMO if available
+        factory_edge = {}
+        try:
+            pa_ids = list(traci.parkingarea.getIDList())
+            for pid in pa_ids:
+                if str(pid).startswith("Factory"):
+                    try:
+                        lane_id = traci.parkingarea.getLaneID(pid)
+                        edge_id = traci.lane.getEdgeID(lane_id)
+                        factory_edge[pid] = edge_id
+                    except Exception:
+                        pass
+        except Exception:
+            # SUMO might not be started yet; proceed with empty mapping
+            factory_edge = {}
+
+        self.truck_agents = [Truck(truck_id=f'truck_{i}', map_data=map_data, factory_edge=factory_edge) for i in range(self.truck_num)]
         # self.factory = [Factory(factory_id=f'factory_{i}', product=f'P{i}') for i in range(self.factory_num)]
         self.factory = {f'Factory{i}': Factory(factory_id=f'Factory{i}', product=f'P{i}') for i in range(self.factory_num)}
 
@@ -232,9 +255,10 @@ class async_scheduling(object):
         
         self.producer = Producer(self.factory, self.truck_agents, transport_idx)
 
-        '''Init the factory in the begining'''
-        for _ in range(100):
-            self.producer.produce_step()
+        # '''Init the factory in the begining'''
+        # for _ in range(100):
+        #     self.producer._init_factory()
+        #     traci.simulationStep()
 
     def flag_reset(self):
         self.invalid = []
@@ -363,9 +387,20 @@ class async_scheduling(object):
                 f_csv.writerow(debug_list)
 
     def _init_sumo(self):
+        """Initialize SUMO once. Prevent repeated close/start cycles that can segfault in GUI mode.
+
+        For the demo we only need a single SUMO instance for the lifetime of the env. Subsequent
+        calls to init_env (e.g. from reset) will skip restarting SUMO to avoid GUI segmentation faults.
+        """
+        if getattr(self, '_sumo_started', False):
+            return
         try:
+            # Close any stray previous connection (headless runs) but suppress errors
             traci.close()
-            print('restart sumo')
-        except:
+        except Exception:
             pass
-        traci.start(["sumo", "-c", "sumo_cfg /home/lwh/Documents/Code/RL-Scheduling/map/sg_map/osm.sumocfg","--threads","20","--no-warnings","True"])
+        if self.use_gui:
+            traci.start(["sumo-gui", "-c", "/home/lwh/Documents/Code/RL-Scheduling/map/sg_map/osm.sumocfg", "--threads", "20", "--no-warnings", "True"])
+        else:
+            traci.start(["sumo", "-c", "/home/lwh/Documents/Code/RL-Scheduling/map/sg_map/osm.sumocfg", "--threads", "20", "--no-warnings", "True"])
+        self._sumo_started = True
