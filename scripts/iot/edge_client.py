@@ -17,6 +17,9 @@ import random
 import time
 from pathlib import Path
 import sys
+from gymnasium.spaces import Discrete, Box, Dict
+from typing import Optional
+import numpy as np
 
 # Ensure project root is on sys.path so 'onpolicy' and other local packages are importable
 try:
@@ -43,6 +46,80 @@ try:
 except Exception:
     RulPredictor = None
 
+class TrainedPolicy:
+    """Wraps the official R_MAPPO actor architecture and loads its state dict.
+
+    Falls back to random actions if loading fails or torch unavailable.
+    """
+    def __init__(self, actor_dir: Optional[str], env_obs_space, env_share_obs_space, env_act_space,
+                 use_recurrent_policy: bool = True, recurrent_N: int = 6):
+        self.device = torch.device("cpu") if torch else None
+        self.valid = False
+        self._loaded_from = None
+        self.actor = None  # Will become R_Actor instance
+        self.args = None
+        if torch is None:
+            print("Torch not available; using random actions.")
+            return
+        try:
+            from onpolicy.config import get_config
+            from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor
+            parser = get_config()
+            # Use default parser (no CLI args) then override needed fields
+            self.args = parser.parse_args([])
+            # Provide missing attributes expected by R_Actor/ACTLayer when not in base config
+            if not hasattr(self.args, 'grid_goal'):
+                self.args.grid_goal = False
+            if not hasattr(self.args, 'goal_grid_size'):
+                self.args.goal_grid_size = 4
+            # Ensure consistency with training
+            self.args.algorithm_name = 'mappo'
+            self.args.use_recurrent_policy = bool(use_recurrent_policy)
+            self.args.use_naive_recurrent_policy = False
+            self.args.recurrent_N = int(recurrent_N)
+            # Build actor network structure matching training code
+            self.actor = R_Actor(self.args, env_obs_space, env_act_space, device=self.device)
+            if actor_dir:
+                state_path = Path(actor_dir) / 'actor.pt'
+                if state_path.exists():
+                    state_dict = torch.load(str(state_path), map_location=self.device)
+                    try:
+                        self.actor.load_state_dict(state_dict)
+                        self.valid = True
+                        self._loaded_from = str(state_path)
+                        print(f"Loaded actor state dict from {state_path}")
+                    except Exception as e:
+                        print(f"Failed to load actor state dict ({e}); using random actions.")
+                else:
+                    print(f"actor.pt not found in {actor_dir}; using random actions.")
+        except Exception as e:
+            print(f"Policy init error: {e}; using random actions.")
+            self.actor = None
+
+    def act(self, obs_vec: np.ndarray) -> int:
+        if self.actor is None or torch is None:
+            # random discrete action size derived from env_act_space
+            return random.randrange(self._action_dim())
+        try:
+            # Prepare tensors
+            obs_tensor = torch.as_tensor(obs_vec, dtype=torch.float32).unsqueeze(0)
+            # rnn_states & masks even if not used (shape compatibility)
+            rnn_states = torch.zeros((1, self.args.recurrent_N, self.args.hidden_size), dtype=torch.float32)
+            masks = torch.ones((1, 1), dtype=torch.float32)
+            with torch.no_grad():
+                actions, _log_probs, _rnn = self.actor(obs_tensor, rnn_states, masks, available_actions=None, deterministic=False)
+            # actions shape (1,1) for Discrete
+            return int(actions.view(-1)[0].item())
+        except Exception as e:
+            print(f"Inference error ({e}); returning random action.")
+            return random.randrange(self._action_dim())
+
+    def _action_dim(self) -> int:
+        # Infer from last linear layer out features if loaded, else attempt env action space length
+        try:
+            return int(self.actor.act.action_out.linear.out_features)
+        except Exception:
+            return 1
 
 def load_torchscript_model(path: str):
     if not path:
@@ -91,7 +168,14 @@ class EdgeClient:
         if self.actor is None and self.actor_dir:
             try:
                 inferred_obs, inferred_act = self._infer_actor_dims(self.actor_dir)
-                self._build_pretrained_actor(obs_len=inferred_obs, action_dim=inferred_act)
+                obs_space = Dict({"global_obs": Box(low=-1, high=30000, shape=(inferred_obs,))})
+                act_space = Discrete(inferred_act)
+                self.actor = TrainedPolicy(actor_dir=self.actor_dir,
+                                    env_obs_space=obs_space,
+                                    env_share_obs_space=obs_space,
+                                    env_act_space=act_space,
+                                    use_recurrent_policy=True,
+                                    recurrent_N=6)
                 self._actor_built = True
             except Exception as e:
                 print(f"[CLIENT {self.device_id}] initial actor load failed: {e}")
@@ -123,14 +207,6 @@ class EdgeClient:
             print(f"[CLIENT {self.device_id}] recv step={step_id} agent={agent_id} seq={seq} action_dim={action_dim}")
         except Exception:
             pass
-
-        # If actor not yet built (could not infer dims), attempt build now using current obs/action sizes
-        if (not self._actor_built) and (self.actor is None) and self.actor_dir and action_dim > 0:
-            try:
-                self._build_pretrained_actor(obs_len=len(env_vec)+1, action_dim=action_dim)
-                self._actor_built = True
-            except Exception as e:
-                print(f"[CLIENT {self.device_id}] deferred actor build failed: {e}")
 
         # Inference timings (simple)
         t0 = time.time()
@@ -176,137 +252,16 @@ class EdgeClient:
 
     def infer_action(self, env_vec, rul, action_dim: int = 0):
         # PyTorch R_Actor path (built from actor_dir)
-        if self.actor is not None and hasattr(self, '_is_r_actor') and getattr(self, '_is_r_actor'):
+        if self.actor is not None:
             try:
-                import torch
-                v = list(env_vec) + [float(rul)]
-                x = torch.tensor(v, dtype=torch.float32).unsqueeze(0)
-                rnn_states = torch.zeros((1, getattr(self, '_recurrent_N', 6), getattr(self, '_hidden_size', 64)), dtype=torch.float32)
-                masks = torch.ones((1, 1), dtype=torch.float32)
-                with torch.no_grad():
-                    actions, _log_probs, _rnn = self.actor(x, rnn_states, masks, available_actions=None, deterministic=False)
-                return int(actions.view(-1)[0].item()) % max(1, int(action_dim or 1))
+                return int(self.actor.act([float(rul)] + list(env_vec)))
             except Exception as e:
                 print(f"[CLIENT {self.device_id}] actor inference error: {e}")
                 # fall through to other modes
-        # TorchScript actor path
-        if self.actor is not None and not getattr(self, '_is_r_actor', False):
-            try:
-                import torch
-                v = list(env_vec) + [float(rul)]
-                x = torch.tensor(v, dtype=torch.float32).unsqueeze(0)
-                with torch.no_grad():
-                    y = self.actor(x)
-                return int(torch.argmax(y, dim=-1).view(-1)[0].item()) % max(1, int(action_dim or 1))
-            except Exception:
-                pass
         # Random fallback spanning full factory range
         if action_dim and action_dim > 0:
             return random.randrange(0, int(action_dim))
         return random.randrange(0, 5)
-
-    def _build_pretrained_actor(self, obs_len: int, action_dim: int):
-        """Build the R_MAPPO R_Actor like in run_demo_schedule.py and load actor.pt from actor_dir.
-        obs_len should include RUL (env_vec + [rul])."""
-        if torch is None:
-            raise RuntimeError("Torch not available for pretrained actor.")
-        from onpolicy.config import get_config  # type: ignore
-        from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor  # type: ignore
-        # Minimal gym-like spaces with Dict support (R_Actor expects Dict with 'global_obs')
-        try:
-            from gym.spaces import Box, Discrete, Dict as DictSpace  # type: ignore
-        except Exception:
-            # Fallback stubs mimicking gym.spaces
-            class Box:  # type: ignore
-                def __init__(self, low=None, high=None, shape=None, dtype=None):
-                    self.shape = shape
-            class Discrete:  # type: ignore
-                def __init__(self, n):
-                    self.n = n
-            class DictSpace(dict):  # type: ignore
-                @property
-                def spaces(self):
-                    return self
-                # Ensure util.get_shape_from_obs_space sees 'Dict'
-                def __repr__(self):
-                    return f"Dict({dict.__repr__(self)})"
-        parser = get_config()
-        args = parser.parse_args([])
-        # Provide additional defaults required by R_Actor/MLPBase initialization
-        if not hasattr(args, 'gain'):
-            args.gain = 0.01
-        if not hasattr(args, 'use_policy_active_masks'):
-            args.use_policy_active_masks = True
-        if not hasattr(args, 'use_policy_vhead'):
-            args.use_policy_vhead = False
-        if not hasattr(args, 'activation_id'):
-            args.activation_id = 1
-        if not hasattr(args, 'use_orthogonal'):
-            args.use_orthogonal = True
-        if not hasattr(args, 'hidden_size'):
-            args.hidden_size = 64
-        if not hasattr(args, 'layer_N'):
-            args.layer_N = 2
-        # Provide overrides mirroring TrainedPolicy in run_demo_schedule.py
-        if not hasattr(args, 'grid_goal'):
-            args.grid_goal = False
-        if not hasattr(args, 'goal_grid_size'):
-            args.goal_grid_size = 4
-        args.algorithm_name = 'mappo'
-        args.use_recurrent_policy = True
-        args.use_naive_recurrent_policy = False
-        args.recurrent_N = 6  # match training recurrent_N
-        # Ensure attention flags exist (expected by MLPBase)
-        if not hasattr(args, 'use_attn_internal'):
-            args.use_attn_internal = True
-        if not hasattr(args, 'use_cat_self'):
-            args.use_cat_self = True
-        # Preserve for rnn state shapes
-        self._recurrent_N = int(getattr(args, 'recurrent_N', 6))
-        self._hidden_size = int(getattr(args, 'hidden_size', 64))
-        # Build spaces
-        try:
-            import numpy as _np
-        except Exception:
-            _np = None
-        if _np is not None and 'Box' in str(Box):
-            low = -1e9
-            high = 1e9
-            obs_space = DictSpace({
-                'global_obs': Box(low=low, high=high, shape=(int(obs_len),), dtype=_np.float32)
-            })
-        else:
-            # Fallback without numpy types
-            obs_space = DictSpace({
-                'global_obs': Box(shape=(int(obs_len),))
-            })
-        act_space = Discrete(int(action_dim or 1))
-        # Debug: show obs_space class name before constructing actor
-        try:
-            print(f"[CLIENT {self.device_id}] constructing R_Actor with obs_space_cls={obs_space.__class__.__name__} action_space_cls={act_space.__class__.__name__}")
-        except Exception:
-            pass
-        # Create actor and load weights (verbose diagnostics)
-        try:
-            actor = R_Actor(args, obs_space, act_space, device=torch.device('cpu'))
-        except Exception as e:
-            print(f"[CLIENT {self.device_id}] R_Actor ctor failed: {type(e).__name__}: {e}")
-            raise
-        state_path = Path(self.actor_dir) / 'actor.pt'
-        if not state_path.exists():
-            raise FileNotFoundError(f"actor.pt not found at {state_path}")
-        try:
-            sd = torch.load(str(state_path), map_location='cpu')
-            missing, unexpected = actor.load_state_dict(sd, strict=False)
-            self.actor = actor
-            self._is_r_actor = True
-            msg = (f"[CLIENT {self.device_id}] Pretrained RL actor loaded successfully from {state_path} "
-                   f"obs_dim={obs_len} action_dim={action_dim} recurrent_N={self._recurrent_N} hidden_size={self._hidden_size}")
-            if missing or unexpected:
-                msg += f" (non-strict load: missing={len(missing)} unexpected={len(unexpected)})"
-            print(msg)
-        except Exception as e:
-            print(f"[CLIENT {self.device_id}] failed to load pretrained RL actor state dict: {type(e).__name__}: {e}")
 
     def _infer_actor_dims(self, actor_dir: str):
         """Infer observation and action dimensions from actor.pt state dict without needing env spaces.

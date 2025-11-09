@@ -38,7 +38,7 @@ REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from onpolicy.envs.rul_schedule.demo_schedule import async_scheduling
+from onpolicy.envs.demo.mqtt_demo import async_scheduling
 from onpolicy.iot.mqtt_bridge import MqttBridge, BridgeConfig
 
 
@@ -62,6 +62,8 @@ class RemotePolicy:
         self.device_map = device_map or {}
         # Track last action per agent to allow safe repeat on timeout instead of random churn
         self._last_action: Dict[str, int] = {}
+        # Track last predicted RUL per agent for GUI display
+        self._last_rul: Dict[str, float] = {}
 
     def next_step(self):
         self._step_id += 1
@@ -89,6 +91,10 @@ class RemotePolicy:
         if ok and isinstance(action, int):
             act = int(action) % self.action_dim
             self._last_action[agent_label] = act
+            try:
+                self._last_rul[agent_label] = float(_rul)
+            except Exception:
+                pass
             print(f"[SERVER] remote action step={self._step_id} agent={agent_label} device={device_id} action={act}")
             return act
 
@@ -101,6 +107,9 @@ class RemotePolicy:
         self._last_action[agent_label] = act
         print(f"[SERVER][TIMEOUT] step={self._step_id} agent={agent_label} device={device_id}; random_fallback={act}")
         return act
+
+    def get_last_rul(self, agent_label: str) -> Optional[float]:
+        return self._last_rul.get(agent_label)
 
 
 def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig):
@@ -167,14 +176,48 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
     root = tk.Tk()
     root.title("SUMO RL Scheduling MQTT Demo")
 
+    # Selection and camera follow
     tk.Label(root, text="Track truck:").grid(row=0, column=0, sticky="w")
     sel_var = tk.StringVar(value="truck_0")
     truck_ids = [f"truck_{i}" for i in range(env.truck_num)]
     sel_box = ttk.Combobox(root, textvariable=sel_var, values=truck_ids, state="readonly")
     sel_box.grid(row=0, column=1, sticky="ew")
+    cam_follow_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(root, text="Camera follow", variable=cam_follow_var).grid(row=0, column=2, padx=8, sticky="w")
+
+    # Tracking panel variables
+    status_var = tk.StringVar(value="-")
+    dist_var = tk.StringVar(value="0.0 m")
+    dest_var = tk.StringVar(value="-")
+    road_var = tk.StringVar(value="-")
+    rul_var = tk.StringVar(value="-")
+    cargo_var = tk.StringVar(value="-")
+
+    def make_row(r, label, var):
+        tk.Label(root, text=label).grid(row=r, column=0, sticky="w")
+        tk.Label(root, textvariable=var).grid(row=r, column=1, sticky="w")
+
+    make_row(1, "Status:", status_var)
+    make_row(2, "Total distance:", dist_var)
+    make_row(3, "Destination:", dest_var)
+    make_row(4, "Road:", road_var)
+    make_row(5, "RUL:", rul_var)
+    make_row(6, "Cargo (prod, weight):", cargo_var)
+
+    # Summary window
+    summary = tk.Toplevel(root)
+    summary.title("Summary Information")
+    cols = ("Truck", "Status", "Distance(m)", "Destination", "Road")
+    tree = ttk.Treeview(summary, columns=cols, show="headings", height=min(20, env.truck_num))
+    for c in cols:
+        tree.heading(c, text=c)
+        tree.column(c, width=140, anchor="center")
+    tree.pack(fill="both", expand=True)
+    for i in range(env.truck_num):
+        tree.insert("", "end", iid=f"truck_{i}", values=(f"truck_{i}", "-", "0.0", "-", "-"))
 
     def update_camera():
-        if env.use_gui:
+        if env.use_gui and cam_follow_var.get():
             try:
                 views = list(traci.gui.getIDList())
                 if views:
@@ -186,6 +229,39 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
 
     steps = 0
     state = {"waiting": False}
+    last_gui_update = {"t": 0.0}
+
+    def refresh_panels(force: bool = False):
+        """Update tracking & summary panels even while waiting for next step (for live distance/RUL updates)."""
+        now = time.time()
+        if not force and (now - last_gui_update["t"]) < 0.5:  # throttle 2 Hz
+            return
+        last_gui_update["t"] = now
+        try:
+            tid = sel_var.get()
+            idx = int(tid.split("_")[-1])
+            t = env.truck_agents[idx]
+            status_var.set(t.state)
+            dist_var.set(f"{t.total_distance:.1f} m")
+            dest_var.set(t.destination)
+            rul_val = getattr(t, 'rul', 0.0)
+            rul_var.set(f"{rul_val:.1f}")
+            cargo_var.set(f"{t.product}, {t.weight:.1f}")
+            try:
+                road_id = traci.vehicle.getRoadID(tid)
+            except Exception:
+                road_id = "-"
+            road_var.set(road_id)
+            for i in range(env.truck_num):
+                vid = f"truck_{i}"
+                ti = env.truck_agents[i]
+                try:
+                    rid = traci.vehicle.getRoadID(vid)
+                except Exception:
+                    rid = "-"
+                tree.item(vid, values=(vid, ti.state, f"{ti.total_distance:.1f}", ti.destination, rid))
+        except Exception:
+            pass
 
     def step_loop():
         nonlocal obs, steps
@@ -210,6 +286,15 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
                         target_label = f"Factory{act}" if env.use_rul_agent else ("MAINTAIN" if act == env.factory_num else f"Factory{act}")
                         dec_parts.append(f"agent{aid}->{target_label}")
                     print("decisions: " + ", ".join(dec_parts))
+                # Update trucks' RUL from edge predictions for GUI purposes
+                try:
+                    for aid in actions.keys():
+                        lab = f"truck_{aid}"
+                        rul_val = policy.get_last_rul(lab)
+                        if rul_val is not None:
+                            env.truck_agents[aid].rul = float(rul_val)
+                except Exception:
+                    pass
                 try:
                     env.gui_prepare_actions(actions)
                 except Exception as e:
@@ -217,6 +302,14 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
                     finish("Env prepare error")
                     return
                 state["waiting"] = True
+            else:
+                # No operable trucks yet. Advance SUMO minimally so trucks can become operable.
+                try:
+                    env.producer.produce_step()
+                    traci.simulationStep()
+                except Exception:
+                    pass
+                refresh_panels()  # show evolving distances even before first decision
         else:
             try:
                 ready = env.gui_tick_until_operable(max_sim_seconds=30.0)
@@ -233,6 +326,8 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
                     return
                 steps += 1
                 state["waiting"] = False
+                refresh_panels(force=True)
+                # Logging
                 parts = [f"step={steps}"]
                 try:
                     sim_t = traci.simulation.getTime()
@@ -243,6 +338,8 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
                 if bool(np.all(done)):
                     finish("All trucks done")
                     return
+        # Periodic passive refresh while waiting
+        refresh_panels()
         root.after(step_interval_ms, step_loop)
 
     def finish(msg: str):
@@ -257,6 +354,8 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
             pass
 
     update_camera()
+    # Initial population
+    refresh_panels(force=True)
     root.after(step_interval_ms, step_loop)
     try:
         root.mainloop()
@@ -275,7 +374,7 @@ def main():
     p.add_argument("--rul-threshold", type=float, default=7.0)
     # Default False so edge client computes RUL
     p.add_argument("--rul-state", action="store_true", default=False)
-    p.add_argument("--max-steps", type=int, default=50)
+    p.add_argument("--max-steps", type=int, default=1000)
     # MQTT
     p.add_argument("--mqtt-host", default="127.0.0.1")
     p.add_argument("--mqtt-port", type=int, default=1883)

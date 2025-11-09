@@ -540,7 +540,7 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
 
 def main():
     parser = argparse.ArgumentParser(description="Run SUMO RL Scheduling Demo (async_scheduling, local inference)")
-    parser.add_argument("--mode", choices=["debug", "gui"], default="gui")
+    parser.add_argument("--mode", choices=["debug", "gui"], default="debug")
     parser.add_argument("--sumo-cfg", default=os.environ.get("SUMO_CFG", "/home/lwh/Documents/Code/RL-Scheduling/map/sg_map/osm.sumocfg"))
     parser.add_argument("--actor-dir", default="/home/lwh/Documents/Code/results/async_schedule/rul_schedule/mappo/threshold_7/wandb/run-20250503_002045-r5psc472/files")
     parser.add_argument("--num-agents", type=int, default=12)
