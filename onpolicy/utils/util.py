@@ -70,15 +70,21 @@ def mse_loss(e):
     return e**2/2
 
 def get_shape_from_obs_space(obs_space):
-    if obs_space.__class__.__name__ == 'Box':
-        obs_shape = obs_space.shape
-    elif obs_space.__class__.__name__ == 'list':
-        obs_shape = obs_space
-    elif obs_space.__class__.__name__ == 'Dict':
-        obs_shape = obs_space.spaces
-    else:
-        raise NotImplementedError
-    return obs_shape
+    """Return observation shape mapping.
+
+    Accept both gym.spaces.Dict (class name 'Dict') and fallback dict wrapper used by edge clients ('DictSpace').
+    """
+    cls = obs_space.__class__.__name__
+    if cls == 'Box':
+        return obs_space.shape
+    if cls == 'list':
+        return obs_space
+    if cls in ('Dict', 'DictSpace'):
+        return obs_space.spaces
+    # Graceful fallback: if it's a plain dict with 'global_obs'
+    if isinstance(obs_space, dict) and 'global_obs' in obs_space:
+        return obs_space
+    raise NotImplementedError(f"Unsupported obs_space class: {cls}")
 
 def get_shape_from_act_space(act_space):
     if act_space.__class__.__name__ == 'Discrete':

@@ -137,6 +137,9 @@ class TrainedPolicy:
             return 1
 
 
+ 
+
+
 # ------------------------- GUI/Display thread -------------------------
 
 def start_gui_windows(env: async_scheduling, refresh_hz: float = 5.0):
@@ -258,8 +261,7 @@ def run_demo_debug(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, m
     obs = env.reset()
 
     # Action space size: factory_num(+1 for maintain if not use_rul_agent)
-    action_dim = env.factory_num if env.use_rul_agent else env.factory_num + 1
-    # Instantiate trained policy (R_MAPPO actor architecture)
+    # Instantiate trained policy (R_MAPPO actor architecture) for local inference
     policy = TrainedPolicy(actor_dir=actor_dir,
                            env_obs_space=env.observation_space[0],
                            env_share_obs_space=env.share_observation_space[0],
@@ -537,7 +539,7 @@ def run_demo_gui(sumo_cfg: str, actor_dir: Optional[str], env_args: EnvArgs, max
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run SUMO RL Scheduling Demo (async_scheduling)")
+    parser = argparse.ArgumentParser(description="Run SUMO RL Scheduling Demo (async_scheduling, local inference)")
     parser.add_argument("--mode", choices=["debug", "gui"], default="gui")
     parser.add_argument("--sumo-cfg", default=os.environ.get("SUMO_CFG", "/home/lwh/Documents/Code/RL-Scheduling/map/sg_map/osm.sumocfg"))
     parser.add_argument("--actor-dir", default="/home/lwh/Documents/Code/results/async_schedule/rul_schedule/mappo/threshold_7/wandb/run-20250503_002045-r5psc472/files")
@@ -567,7 +569,7 @@ def main():
             max_steps=args.max_steps,
             debug=args.debug,
             use_recurrent_policy=args.use_recurrent_policy,
-            recurrent_N=args.recurrent_N
+            recurrent_N=args.recurrent_N,
         )
     else:
         run_demo_debug(
@@ -577,7 +579,7 @@ def main():
             max_steps=args.max_steps,
             debug=args.debug or True,
             use_recurrent_policy=args.use_recurrent_policy,
-            recurrent_N=args.recurrent_N
+            recurrent_N=args.recurrent_N,
         )
 
 
