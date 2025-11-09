@@ -17,7 +17,11 @@ import random
 import time
 from pathlib import Path
 import sys
-from gymnasium.spaces import Discrete, Box, Dict
+# Support both Gymnasium and classic Gym
+try:
+    from gymnasium.spaces import Discrete, Box, Dict
+except Exception:
+    from gym.spaces import Discrete, Box, Dict
 from typing import Optional
 import numpy as np
 
@@ -203,8 +207,13 @@ class EdgeClient:
         sensor_vec = payload.get('sensor', {}).get('feature_vector', [])
         meta = payload.get('meta', {}) or {}
         action_dim = int(meta.get('action_dim') or 0)
+        decision_type = meta.get('decision_type', 'rl') or 'rl'
+        pickup_candidates = meta.get('pickup_candidates') or None
         try:
-            print(f"[CLIENT {self.device_id}] recv step={step_id} agent={agent_id} seq={seq} action_dim={action_dim}")
+            if decision_type == 'pickup':
+                print(f"[CLIENT {self.device_id}] recv PICKUP step={step_id} agent={agent_id} seq={seq} candidates={len(pickup_candidates) if pickup_candidates else 'NA'}")
+            else:
+                print(f"[CLIENT {self.device_id}] recv RL step={step_id} agent={agent_id} seq={seq} action_dim={action_dim}")
         except Exception:
             pass
 
@@ -212,7 +221,10 @@ class EdgeClient:
         t0 = time.time()
         rul = self.infer_rul(sensor_vec)
         t1 = time.time()
-        action = self.infer_action(env_vec, rul, action_dim)
+        if decision_type == 'pickup':
+            action = self._infer_pickup(pickup_candidates, action_dim)
+        else:
+            action = self.infer_action(env_vec, rul, action_dim)
         t2 = time.time()
 
         reply = {
@@ -223,10 +235,14 @@ class EdgeClient:
             'action': int(action),
             'inference_ms': float((t2 - t0) * 1000.0),
             'device_id': self.device_id,
+            'decision_type': decision_type,
         }
         client.publish(f"demo/act/{self.device_id}", json.dumps(reply), qos=1, retain=False)
         try:
-            print(f"[CLIENT {self.device_id}] send step={step_id} agent={agent_id} seq={seq} action={int(action)} rul={float(rul):.2f}")
+            if decision_type == 'pickup':
+                print(f"[CLIENT {self.device_id}] send PICKUP step={step_id} agent={agent_id} seq={seq} action={int(action)} -> pick up goods at Factory{int(action)} rul={float(rul):.2f}")
+            else:
+                print(f"[CLIENT {self.device_id}] send RL step={step_id} agent={agent_id} seq={seq} action={int(action)} -> delivery goods to Factory{int(action)} rul={float(rul):.2f}")
         except Exception:
             pass
 
@@ -262,6 +278,20 @@ class EdgeClient:
         if action_dim and action_dim > 0:
             return random.randrange(0, int(action_dim))
         return random.randrange(0, 5)
+
+    def _infer_pickup(self, pickup_candidates, action_dim: int):
+        """Randomly select a pickup factory among candidates (0-44). RL actor not used here."""
+        if pickup_candidates and isinstance(pickup_candidates, list) and len(pickup_candidates) > 0:
+            try:
+                return int(random.choice(pickup_candidates))
+            except Exception:
+                pass
+        # fallback to uniform range
+        upper = action_dim if action_dim and action_dim > 0 else 45
+        try:
+            return int(random.randrange(0, int(upper)))
+        except Exception:
+            return 0
 
     def _infer_actor_dims(self, actor_dir: str):
         """Infer observation and action dimensions from actor.pt state dict without needing env spaces.

@@ -70,6 +70,8 @@ class Truck(object):
         
         # Recover time
         self.recover_time = 0
+        # Pickup decision needed flag
+        self.needs_pickup = False
         '''
         Indicate last state:
         0: Normal
@@ -118,6 +120,8 @@ class Truck(object):
         
         # Recover time
         self.recover_time = 0
+        # Reset pickup flag
+        self.needs_pickup = False
 
     
     def truck_step(self) -> None:
@@ -167,8 +171,10 @@ class Truck(object):
                 self.operable_flag = True
             # Randomly select a destination to get raw materials
             elif self.load_time <= 0 and self.weight == 0:
-                next_destination = f'Factory{random.randint(0,44)}'
-                self.delivery(next_destination)
+                # Defer pickup destination to MQTT client
+                self.state = 'waiting'
+                self.operable_flag = True
+                self.needs_pickup = True
         # Check the truck in the delivery state arrive the destination or not
         # If arrived, change the state to waiting (empty) or arrived (loaded)
         elif self.state == 'delivery':
@@ -181,8 +187,8 @@ class Truck(object):
                     self.state = 'waiting'
                     self.operable_flag = True
                     if self.position in self.final_factory:
-                        next_destination = f'Factory{random.randint(0,44)}'
-                        self.delivery(next_destination)
+                        # Defer pickup destination to MQTT client
+                        self.needs_pickup = True
                 else:
                     self.state = 'arrived'
                     self.operable_flag = False
@@ -224,6 +230,8 @@ class Truck(object):
         self.time_step = 0
         self.state = 'delivery'
         self.operable_flag = False
+        # Clear pickup flag if any
+        self.needs_pickup = False
 
         # SUMO operation
         traci.vehicle.changeTarget(vehID=self.id, edgeID=self.factory_edge[destination])

@@ -111,6 +111,44 @@ class RemotePolicy:
     def get_last_rul(self, agent_label: str) -> Optional[float]:
         return self._last_rul.get(agent_label)
 
+    def pickup(self, agent_label: str, candidates: Optional[list] = None, action_dim: int = 45) -> int:
+        """Request a pickup destination selection from the edge client.
+        Returns selected factory index in [0, action_dim).
+        """
+        action: Optional[int] = None
+        device_id: Optional[str] = None
+        ok: bool = False
+        candidates = candidates if candidates is not None else list(range(action_dim))
+        try:
+            if agent_label in self.device_map:
+                device_id = self.device_map[agent_label]
+                _rul, action, ok, device_id = self.bridge.request_to(device_id=device_id, step_id=self._step_id, agent_id=agent_label,
+                                                                      env_obs=[], sensor=[], action_dim=action_dim,
+                                                                      decision_type="pickup", pickup_candidates=candidates)
+            else:
+                _rul, action, ok, device_id = self.bridge.request(step_id=self._step_id, agent_id=agent_label,
+                                                                  env_obs=[], sensor=[], action_dim=action_dim,
+                                                                  decision_type="pickup", pickup_candidates=candidates)
+        except Exception as e:
+            print(f"[SERVER][ERROR] pickup request failed step={self._step_id} agent={agent_label}: {e}")
+            ok = False
+
+        if ok and isinstance(action, int):
+            act = int(action) % action_dim
+            self._last_action[agent_label] = act
+            try:
+                self._last_rul[agent_label] = float(_rul)
+            except Exception:
+                pass
+            print(f"[SERVER] remote pickup step={self._step_id} agent={agent_label} device={device_id} factory={act}")
+            return act
+
+        # Timeout or error -> fallback uniformly
+        act = random.randrange(action_dim)
+        self._last_action[agent_label] = act
+        print(f"[SERVER][TIMEOUT] pickup step={self._step_id} agent={agent_label} device={device_id}; random_fallback={act}")
+        return act
+
 
 def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig):
     env_args.use_gui = False
@@ -127,14 +165,23 @@ def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig):
             actions: Dict[int, int] = {}
             policy.next_step()
             for aid, o in obs.items():
-                # Obtain sensor feature history from truck (eng_obs list) for remote RUL predictor
+                # Decide whether this is a pickup decision
                 try:
                     truck = env.truck_agents[aid]
-                    sensor_features = getattr(truck, 'eng_obs', [])
                 except Exception:
-                    sensor_features = []
-                act = policy.act(f"truck_{aid}", np.asarray(o, dtype=np.float32), sensor_features)
-                actions[int(aid)] = int(act)
+                    truck = None
+                if truck is not None and getattr(truck, 'needs_pickup', False):
+                    # Pickup: select among raw material factories [0..44]
+                    act = policy.pickup(f"truck_{aid}", candidates=list(range(45)), action_dim=45)
+                    actions[int(aid)] = int(act)
+                else:
+                    # RL action with remote RUL
+                    try:
+                        sensor_features = getattr(truck, 'eng_obs', []) if truck is not None else []
+                    except Exception:
+                        sensor_features = []
+                    act = policy.act(f"truck_{aid}", np.asarray(o, dtype=np.float32), sensor_features)
+                    actions[int(aid)] = int(act)
             # Log decisions
             if actions:
                 dec_parts = []
@@ -275,11 +322,18 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, st
                 for aid, o in obs.items():
                     try:
                         truck = env.truck_agents[aid]
-                        sensor_features = getattr(truck, 'eng_obs', [])
                     except Exception:
-                        sensor_features = []
-                    act = policy.act(f"truck_{aid}", np.asarray(o, dtype=np.float32), sensor_features)
-                    actions[int(aid)] = int(act)
+                        truck = None
+                    if truck is not None and getattr(truck, 'needs_pickup', False):
+                        act = policy.pickup(f"truck_{aid}", candidates=list(range(45)), action_dim=45)
+                        actions[int(aid)] = int(act)
+                    else:
+                        try:
+                            sensor_features = getattr(truck, 'eng_obs', []) if truck is not None else []
+                        except Exception:
+                            sensor_features = []
+                        act = policy.act(f"truck_{aid}", np.asarray(o, dtype=np.float32), sensor_features)
+                        actions[int(aid)] = int(act)
                 if actions:
                     dec_parts = []
                     for aid, act in actions.items():
@@ -378,7 +432,7 @@ def main():
     # MQTT
     p.add_argument("--mqtt-host", default="127.0.0.1")
     p.add_argument("--mqtt-port", type=int, default=1883)
-    p.add_argument("--mqtt-devices", default="edge-01,edge-02,edge-03,edge-04")
+    p.add_argument("--mqtt-devices", default="edge-00,edge-01,edge-02,edge-03")
     p.add_argument("--mqtt-timeout-ms", type=int, default=300)
     args = p.parse_args()
 

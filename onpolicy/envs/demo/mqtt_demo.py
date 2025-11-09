@@ -1,5 +1,9 @@
 import numpy as np
-from gymnasium.spaces import Discrete, Box, Dict
+# Support both Gymnasium and classic Gym
+try:
+    from gymnasium.spaces import Discrete, Box, Dict
+except Exception:
+    from gym.spaces import Discrete, Box, Dict
 from collections import defaultdict
 from pathlib import Path
 from csv import writer

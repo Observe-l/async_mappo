@@ -38,16 +38,16 @@ Open four terminals and run one client per device. Replace `ACTOR_DIR` with your
 
 ```bash
 # Terminal 1
-python3 scripts/iot/edge_client.py --device-id edge-01 
+python3 scripts/iot/edge_client.py --device-id edge-00 
 
 # Terminal 2
-python3 scripts/iot/edge_client.py --device-id edge-02 
+python3 scripts/iot/edge_client.py --device-id edge-01 
 
 # Terminal 3
-python3 scripts/iot/edge_client.py --device-id edge-03 
+python3 scripts/iot/edge_client.py --device-id edge-02 
 
 # Terminal 4
-python3 scripts/iot/edge_client.py --device-id edge-04 
+python3 scripts/iot/edge_client.py --device-id edge-03 
 ```
 
 You should see at startup, before connecting to MQTT:
@@ -64,7 +64,7 @@ GUI mode (recommended to visualize SUMO and truck info):
 python3 scripts/render/run_demo_schedule_mqtt.py --mode gui \
   --num-agents 12 --max-steps 200 \
   --mqtt-host 127.0.0.1 --mqtt-port 1883 \
-  --mqtt-devices edge-01,edge-02,edge-03,edge-04
+  --mqtt-devices edge-00,edge-01,edge-02,edge-03
 ```
 
 Debug (headless) mode:
@@ -73,7 +73,7 @@ Debug (headless) mode:
 python3 scripts/render/run_demo_schedule_mqtt.py --mode debug \
   --num-agents 12 --max-steps 200 \
   --mqtt-host 127.0.0.1 --mqtt-port 1883 \
-  --mqtt-devices edge-01,edge-02,edge-03,edge-04
+  --mqtt-devices edge-00,edge-01,edge-02,edge-03
 ```
 
 Notes:

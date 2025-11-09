@@ -36,7 +36,7 @@ class BridgeConfig:
     keepalive: int = 30
     qos: int = 1
     timeout_ms: int = 150
-    devices: Tuple[str, ...] = ("edge-01", "edge-02", "edge-03", "edge-04")
+    devices: Tuple[str, ...] = ("edge-00", "edge-01", "edge-02", "edge-03")
     mode: str = "mqtt"  # "mqtt" or "mock"
 
 
@@ -110,23 +110,31 @@ class MqttBridge:
             self._seq = (self._seq + 1) & 0x7FFFFFFF
             return self._seq
 
-    def request(self, *, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None) -> Tuple[float, Optional[int], bool, str]:
+    def request(self, *, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None,
+                decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], bool, str]:
         """Send one observation to a device and wait for result.
 
         Returns (rul, action, ok, device_id). If timeout, ok=False and defaults provided.
         """
         device_id = self.next_device()
-        return self.request_to(device_id=device_id, step_id=step_id, agent_id=agent_id, env_obs=env_obs, sensor=sensor, action_dim=action_dim)
+        return self.request_to(device_id=device_id, step_id=step_id, agent_id=agent_id, env_obs=env_obs, sensor=sensor,
+                               action_dim=action_dim, decision_type=decision_type, pickup_candidates=pickup_candidates)
 
-    def request_to(self, *, device_id: str, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None) -> Tuple[float, Optional[int], bool, str]:
+    def request_to(self, *, device_id: str, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None,
+                   decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], bool, str]:
         """Send request to a specific device id (no round robin)."""
         seq = self.new_seq()
         key = (step_id, agent_id, seq)
 
         if self.cfg.mode == "mock":
             # Simulate inference locally
-            rul = float(self._mock_rul(sensor))
-            action = self._mock_action(env_obs, action_dim)
+            if decision_type == "pickup":
+                cands = pickup_candidates if pickup_candidates else list(range(int(action_dim or 45)))
+                action = int(random.choice(cands))
+                rul = self.default_rul()
+            else:
+                rul = float(self._mock_rul(sensor))
+                action = self._mock_action(env_obs, action_dim)
             return (rul, action, True, device_id)
 
         assert self._client is not None, "MQTT client not initialized"
@@ -161,7 +169,11 @@ class MqttBridge:
             "timestamp": time.time(),
             "env_obs": {"vector": to_plain(env_obs)},
             "sensor": {"feature_vector": to_plain(sensor)},
-            "meta": {"action_dim": int(action_dim) if action_dim is not None else None},
+            "meta": {
+                "action_dim": int(action_dim) if action_dim is not None else None,
+                "decision_type": decision_type,
+                "pickup_candidates": to_plain(pickup_candidates) if pickup_candidates is not None else None
+            },
         }
         ev = threading.Event()
         with self._lock:
