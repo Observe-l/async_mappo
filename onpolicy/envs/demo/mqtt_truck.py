@@ -46,6 +46,8 @@ class Truck(object):
         self.load_time = 0
         # Record the reward
         self.cumulate_reward = 0.0
+        # Total transported cumulative goods (capacity units)
+        self.total_transported = 0.0
 
         # reset the driving distance
         self.driving_distance = 0.0
@@ -122,6 +124,7 @@ class Truck(object):
         self.recover_time = 0
         # Reset pickup flag
         self.needs_pickup = False
+        # Note: keep total_transported across recover cycles
 
     
     def truck_step(self) -> None:
@@ -272,6 +275,11 @@ class Truck(object):
         self.product = None
         self.operable_flag = False
         self.last_transport += self.capacity
+        # Add to cumulative transported
+        try:
+            self.total_transported += self.capacity
+        except Exception:
+            self.total_transported = self.capacity
 
     def get_truck_product(self) -> int:
         if self.product is None:

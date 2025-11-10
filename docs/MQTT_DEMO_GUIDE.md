@@ -15,6 +15,12 @@ Recommended packages:
 - `torch` (PyTorch)
 - `tensorflow` (optional; used for the RUL predictor fallback on the edge)
 
+Optional (for MySQL logging in this MQTT demo):
+- A local MySQL server reachable at `127.0.0.1:3306`
+- Python driver: `mysql-connector-python`
+  - You can install it with: `python3 -m pip install --user mysql-connector-python`
+  - The demo will gracefully disable DB logging if it cannot connect.
+
 ## Paths and environment
 
 From the repo root, ensure the project is on `PYTHONPATH` when running scripts:
@@ -38,16 +44,16 @@ Open four terminals and run one client per device. Replace `ACTOR_DIR` with your
 
 ```bash
 # Terminal 1
-python3 scripts/iot/edge_client.py --device-id edge-00 
+python3 scripts/iot/device_client.py --device-id edge-00 
 
 # Terminal 2
-python3 scripts/iot/edge_client.py --device-id edge-01 
+python3 scripts/iot/device_client.py --device-id edge-01 
 
 # Terminal 3
-python3 scripts/iot/edge_client.py --device-id edge-02 
+python3 scripts/iot/device_client.py --device-id edge-02 
 
 # Terminal 4
-python3 scripts/iot/edge_client.py --device-id edge-03 
+python3 scripts/iot/device_client.py --device-id edge-03 
 ```
 
 You should see at startup, before connecting to MQTT:
@@ -61,25 +67,25 @@ If a client times out waiting for messages, that’s normal until the server sta
 GUI mode (recommended to visualize SUMO and truck info):
 
 ```bash
-python3 scripts/render/run_demo_schedule_mqtt.py --mode gui \
-  --num-agents 12 --max-steps 200 \
-  --mqtt-host 127.0.0.1 --mqtt-port 1883 \
-  --mqtt-devices edge-00,edge-01,edge-02,edge-03
+python3 scripts/render/run_demo_schedule_mqtt.py --mode gui --mysql-enable\
+  --num-agents 4 --max-steps 2000 \
+  
 ```
 
 Debug (headless) mode:
 
 ```bash
-python3 scripts/render/run_demo_schedule_mqtt.py --mode debug \
-  --num-agents 12 --max-steps 200 \
-  --mqtt-host 127.0.0.1 --mqtt-port 1883 \
-  --mqtt-devices edge-00,edge-01,edge-02,edge-03
+python3 scripts/render/run_demo_schedule_mqtt.py --mode debug --mysql-enable\
+  --num-agents 4 --max-steps 2000 \
 ```
 
 Notes:
 - The server sends observations to edge clients via round‑robin.
 - Server uses remote decisions only. On timeout, it repeats the last action for that agent; if none, it chooses a random fallback.
 - GUI shows per‑truck Status, Distance, Destination, Road, and RUL (RUL is sourced from the edge client predictions).
+- MySQL logging: when enabled, a new database named `sumo_YYYYMMDD_HHMMSS` is created per run with tables `truck_0`..`truck_N`.
+  - Each row includes `sim_time`, `rul`, `driving_distance_km`, `state`, `destination`, `loaded_goods`, `weight`, `total_transported`, `decision_flag`.
+  - Inserts happen on every RL/pickup decision and approximately every 200 simulation seconds.
 
 ## Expected logs
 
