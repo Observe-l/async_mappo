@@ -111,17 +111,17 @@ class MqttBridge:
             return self._seq
 
     def request(self, *, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None,
-                decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], bool, str]:
+                decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], Optional[float], bool, str]:
         """Send one observation to a device and wait for result.
 
         Returns (rul, action, ok, device_id). If timeout, ok=False and defaults provided.
         """
         device_id = self.next_device()
         return self.request_to(device_id=device_id, step_id=step_id, agent_id=agent_id, env_obs=env_obs, sensor=sensor,
-                               action_dim=action_dim, decision_type=decision_type, pickup_candidates=pickup_candidates)
+                       action_dim=action_dim, decision_type=decision_type, pickup_candidates=pickup_candidates)
 
     def request_to(self, *, device_id: str, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None,
-                   decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], bool, str]:
+                   decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], Optional[float], bool, str]:
         """Send request to a specific device id (no round robin)."""
         seq = self.new_seq()
         key = (step_id, agent_id, seq)
@@ -132,10 +132,12 @@ class MqttBridge:
                 cands = pickup_candidates if pickup_candidates else list(range(int(action_dim or 45)))
                 action = int(random.choice(cands))
                 rul = self.default_rul()
+                log_prob = None
             else:
                 rul = float(self._mock_rul(sensor))
                 action = self._mock_action(env_obs, action_dim)
-            return (rul, action, True, device_id)
+                log_prob = None
+            return (rul, action, log_prob, True, device_id)
 
         assert self._client is not None, "MQTT client not initialized"
         # Prepare payload (ensure lists not numpy); handle nested containers recursively
@@ -193,7 +195,7 @@ class MqttBridge:
                 print(f"[ENV] timeout step={step_id} agent={agent_id} seq={seq} device={device_id}")
             except Exception:
                 pass
-            return (self.default_rul(), None, False, device_id)
+            return (self.default_rul(), None, None, False, device_id)
         try:
             rul = float(res.get("rul", self.default_rul()))
             action_val = res.get("action", None)
@@ -201,15 +203,43 @@ class MqttBridge:
                 action = int(action_val[-1])
             else:
                 action = int(action_val) if action_val is not None else None
+            log_prob_val = res.get("log_prob", None)
+            log_prob = float(log_prob_val) if log_prob_val is not None else None
         except Exception:
             rul = self.default_rul()
             action = None
+            log_prob = None
         try:
             dev_id = str(res.get("device_id", device_id))
             print(f"[ENV] got result step={step_id} agent={agent_id} seq={seq} device={dev_id} action={action} rul={rul}")
         except Exception:
             dev_id = str(res.get("device_id", device_id))
-        return (rul, action, True, dev_id)
+        return (rul, action, log_prob, True, dev_id)
+
+    # --------------- Training helpers ---------------
+    def publish_train(self, device_id: str, payload: dict):
+        """Publish a training transition to a specific edge device.
+
+        Payload expected keys (example):
+          type: 'train'
+          step_id, agent_id
+          obs, action, reward, next_obs, done, value, next_value
+        """
+        try:
+            if self._client is None:
+                return False
+            self._client.publish(f"demo/train/{device_id}", json.dumps(payload), qos=self.cfg.qos, retain=False)
+            if payload.get('type') == 'train_batch':
+                print(f"[ENV->MQTT][TRAIN_BATCH] send agent={payload.get('agent_id')} count={len(payload.get('obs', []))} to={device_id}")
+            else:
+                print(f"[ENV->MQTT][TRAIN] send step={payload.get('step_id')} agent={payload.get('agent_id')} to={device_id} reward={payload.get('reward')} value={payload.get('value')}")
+            return True
+        except Exception as e:
+            try:
+                print(f"[ENV->MQTT][TRAIN][ERROR] publish failed device={device_id}: {e}")
+            except Exception:
+                pass
+            return False
 
     # --------------- Defaults / mock ---------------
     def default_rul(self) -> float:
