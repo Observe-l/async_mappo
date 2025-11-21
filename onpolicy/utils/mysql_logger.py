@@ -2,12 +2,13 @@ import datetime
 import mysql.connector
 from typing import List, Dict, Any, Optional
 
+
 class MySQLRunLogger:
     """Manage per-run SUMO simulation logging into a fresh MySQL database.
 
     Creates a new database named sumo_YYYYMMDD_HHMMSS at init, then creates one table per truck.
     Table schema columns:
-      sim_time VARCHAR(16)   -- HH:MM:SS
+      sim_time VARCHAR(19)   -- formatted 'YYYY-MM-DD HH:MM:SS' = base date 2025-11-01 plus simulation seconds
       rul FLOAT
       driving_distance_km FLOAT
       state VARCHAR(32)
@@ -15,8 +16,8 @@ class MySQLRunLogger:
       loaded_goods VARCHAR(32)
       weight FLOAT
       total_transported FLOAT
-      decision_flag TINYINT  -- 1 if this row inserted due to RL decision, else 0 (periodic)
     """
+
     def __init__(self, user: str, password: str, host: str = '127.0.0.1', port: int = 3306,
                  database: Optional[str] = None, prefix: str = 'sumo_'):
         ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -36,15 +37,14 @@ class MySQLRunLogger:
             ddl = (
                 f"CREATE TABLE IF NOT EXISTS `{tid}` ("
                 "id INT AUTO_INCREMENT PRIMARY KEY,"
-                "sim_time VARCHAR(16),"
+                "sim_time VARCHAR(19),"
                 "rul FLOAT,"
                 "driving_distance_km FLOAT,"
                 "state VARCHAR(32),"
                 "destination VARCHAR(32),"
                 "loaded_goods VARCHAR(32),"
                 "weight FLOAT,"
-                "total_transported FLOAT,"
-                "decision_flag TINYINT"
+                "total_transported FLOAT"
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
             )
             self._cursor.execute(ddl)
@@ -52,7 +52,16 @@ class MySQLRunLogger:
 
     def insert(self, truck_id: str, row: Dict[str, Any]):
         self.ensure_tables([truck_id])
-        cols = ["sim_time","rul","driving_distance_km","state","destination","loaded_goods","weight","total_transported","decision_flag"]
+        cols = [
+            "sim_time",
+            "rul",
+            "driving_distance_km",
+            "state",
+            "destination",
+            "loaded_goods",
+            "weight",
+            "total_transported",
+        ]
         values = [row.get(c) for c in cols]
         placeholders = ','.join(['%s'] * len(values))
         sql = f"INSERT INTO `{truck_id}` ({','.join(cols)}) VALUES ({placeholders})"

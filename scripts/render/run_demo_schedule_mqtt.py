@@ -3,15 +3,16 @@
 SUMO RL Truck Scheduling MQTT Demo with MySQL logging.
 
 Adds per-run MySQL database (sumo_YYYYMMDD_HHMMSS) containing one table per truck.
-Each row captures: sim_time (HH:MM:SS), rul, driving_distance_km, state, destination,
-loaded_goods, weight, total_transported. Rows inserted on every RL/pickup decision and
-every 200 seconds of SUMO time.
+Each row captures: sim_time (UNIX seconds = 2025-11-01 00:00:00 + simulation seconds),
+rul, driving_distance_km, state, destination, loaded_goods, weight, total_transported.
+Rows inserted on every RL/pickup decision and every 200 seconds of SUMO time.
 """
 from __future__ import annotations
 
 import argparse
 import random
 import time
+import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -92,13 +93,13 @@ def _collect_truck_row(truck_id: str, truck, decision: bool, dist_tracker: Dista
         sim_t = traci.simulation.getTime()
     except Exception:
         sim_t = 0.0
-    h = int(sim_t // 3600)
-    m = int((sim_t % 3600) // 60)
-    s = int(sim_t % 60)
-    # Get robust total driving distance from SUMO (meters -> km)
+    # Format simulation time as base date 2025-11-01 plus elapsed seconds -> 'YYYY-MM-DD HH:MM:SS'
+    base_dt = datetime.datetime(2025, 11, 1, 0, 0, 0)
+    ts_dt = base_dt + datetime.timedelta(seconds=float(sim_t))
+    sim_time_str = ts_dt.strftime('%Y-%m-%d %H:%M:%S')
     total_dist_km = float(dist_tracker.total_m(truck_id) / 1000.0)
     return {
-        'sim_time': f"{h:02d}:{m:02d}:{s:02d}",
+        'sim_time': sim_time_str,
         'rul': float(getattr(truck, 'rul', 0.0)),
         'driving_distance_km': total_dist_km,
         'state': str(getattr(truck, 'state', 'unknown')),
@@ -106,7 +107,6 @@ def _collect_truck_row(truck_id: str, truck, decision: bool, dist_tracker: Dista
         'loaded_goods': str(getattr(truck, 'product', '')),
         'weight': float(getattr(truck, 'weight', 0.0)),
         'total_transported': float(getattr(truck, 'total_transported', 0.0)),
-        'decision_flag': 1 if decision else 0,
     }
 
 
@@ -195,7 +195,15 @@ def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, 
     obs = env.reset()
     action_dim = env.factory_num if env.use_rul_agent else env.factory_num + 1
     bridge = MqttBridge(bridge_cfg)
-    policy = RemotePolicy(bridge, action_dim)
+    # Fixed device mapping: truck_i -> devices[i]
+    try:
+        device_ids = list(bridge_cfg.devices)
+    except Exception:
+        device_ids = []
+    fixed_map = {f'truck_{i}': device_ids[i] for i in range(min(env.truck_num, len(device_ids)))}
+    if fixed_map:
+        print("[MQTT] Using fixed device map:", ", ".join([f"truck_{k.split('_')[-1]}->{v}" for k,v in fixed_map.items()]))
+    policy = RemotePolicy(bridge, action_dim, device_map=fixed_map)
     dist_tracker = DistanceTracker()
     # DB logger
     if MySQLRunLogger is not None and mysql_cfg.get('enable'):
@@ -293,7 +301,15 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
     obs = env.reset()
     action_dim = env.factory_num if env.use_rul_agent else env.factory_num + 1
     bridge = MqttBridge(bridge_cfg)
-    policy = RemotePolicy(bridge, action_dim)
+    # Fixed device mapping: truck_i -> devices[i]
+    try:
+        device_ids = list(bridge_cfg.devices)
+    except Exception:
+        device_ids = []
+    fixed_map = {f'truck_{i}': device_ids[i] for i in range(min(env.truck_num, len(device_ids)))}
+    if fixed_map:
+        print("[MQTT] Using fixed device map:", ", ".join([f"truck_{k.split('_')[-1]}->{v}" for k,v in fixed_map.items()]))
+    policy = RemotePolicy(bridge, action_dim, device_map=fixed_map)
     dist_tracker = DistanceTracker()
     if MySQLRunLogger is not None and mysql_cfg.get('enable'):
         try:
@@ -391,7 +407,7 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
         except Exception:
             pass
     def step_loop():
-        nonlocal obs
+        nonlocal obs, last_periodic_log_t
         if state['waiting'] is False:
             if obs:
                 actions: Dict[int,int] = {}
@@ -509,13 +525,13 @@ def main():
     p.add_argument('--mqtt-host', default='127.0.0.1')
     p.add_argument('--mqtt-port', type=int, default=1883)
     p.add_argument('--mqtt-devices', default='edge-00,edge-01,edge-02,edge-03')
-    p.add_argument('--mqtt-timeout-ms', type=int, default=300)
+    p.add_argument('--mqtt-timeout-ms', type=int, default=1000)
     # MySQL logging options
     p.add_argument('--mysql-enable', action='store_true', help='Enable MySQL logging')
     p.add_argument('--mysql-host', default='127.0.0.1')
     p.add_argument('--mysql-port', default='3306')
-    p.add_argument('--mysql-user', default='root')
-    p.add_argument('--mysql-password', default='')
+    p.add_argument('--mysql-user', default='lwh')
+    p.add_argument('--mysql-password', default='666888')
     # Debug print options
     p.add_argument('--print-distance-debug', action='store_true', help='Print raw and cumulative SUMO distance each step')
     args = p.parse_args()

@@ -68,7 +68,7 @@ GUI mode (recommended to visualize SUMO and truck info):
 
 ```bash
 python3 scripts/render/run_demo_schedule_mqtt.py --mode gui --mysql-enable\
-  --num-agents 4 --max-steps 2000 \
+  --num-agents 4 --max-steps 2000
   
 ```
 
@@ -84,7 +84,8 @@ Notes:
 - Server uses remote decisions only. On timeout, it repeats the last action for that agent; if none, it chooses a random fallback.
 - GUI shows per‑truck Status, Distance, Destination, Road, and RUL (RUL is sourced from the edge client predictions).
 - MySQL logging: when enabled, a new database named `sumo_YYYYMMDD_HHMMSS` is created per run with tables `truck_0`..`truck_N`.
-  - Each row includes `sim_time`, `rul`, `driving_distance_km`, `state`, `destination`, `loaded_goods`, `weight`, `total_transported`, `decision_flag`.
+  - Each row includes `sim_time`, `rul`, `driving_distance_km`, `state`, `destination`, `loaded_goods`, `weight`, `total_transported`.
+  - `sim_time` is a formatted string `YYYY-MM-DD HH:MM:SS`, computed as base date `2025-11-01 00:00:00` plus the SUMO simulation time (in seconds).
   - Inserts happen on every RL/pickup decision and approximately every 200 simulation seconds.
 
 ## Expected logs
