@@ -137,17 +137,23 @@ class RemotePolicy:
         self._step_id += 1
 
     def act(self, agent_label: str, obs_vec: np.ndarray, sensor_features) -> int:
-        action = None
-        device_id = None
-        ok: bool = False
+        action = None; device_id = None; ok = False; _rul = None
         try:
             if agent_label in self.device_map:
                 device_id = self.device_map[agent_label]
-                _rul, action, ok, device_id = self.bridge.request_to(device_id=device_id, step_id=self._step_id, agent_id=agent_label,
-                                                                      env_obs=obs_vec, sensor=sensor_features, action_dim=self.action_dim)
+                ret = self.bridge.request_to(device_id=device_id, step_id=self._step_id, agent_id=agent_label,
+                                             env_obs=obs_vec, sensor=sensor_features, action_dim=self.action_dim)
             else:
-                _rul, action, ok, device_id = self.bridge.request(step_id=self._step_id, agent_id=agent_label,
-                                                                  env_obs=obs_vec, sensor=sensor_features, action_dim=self.action_dim)
+                ret = self.bridge.request(step_id=self._step_id, agent_id=agent_label,
+                                          env_obs=obs_vec, sensor=sensor_features, action_dim=self.action_dim)
+            # Support legacy 4-tuple and new 5-tuple with log_prob
+            if isinstance(ret, tuple) or isinstance(ret, list):
+                if len(ret) == 5:
+                    _rul, action, log_prob, ok, device_id = ret
+                else:
+                    _rul, action, ok, device_id = ret
+            else:
+                raise RuntimeError("Unexpected return type from bridge.request")
         except Exception as e:
             print(f"[SERVER][ERROR] request failed step={self._step_id} agent={agent_label}: {e}")
             ok = False
@@ -175,19 +181,23 @@ class RemotePolicy:
 
     def pickup(self, agent_label: str, candidates = None, action_dim: int = 45) -> int:
         candidates = candidates if candidates is not None else list(range(action_dim))
+        action = None; ok = False; _rul = None
         try:
             if agent_label in self.device_map:
-                _rul, action, ok, _dev = self.bridge.request_to(device_id=self.device_map[agent_label], step_id=self._step_id,
-                                                                agent_id=agent_label, env_obs=[], sensor=[], action_dim=action_dim,
-                                                                decision_type='pickup', pickup_candidates=candidates)
+                ret = self.bridge.request_to(device_id=self.device_map[agent_label], step_id=self._step_id,
+                                             agent_id=agent_label, env_obs=[], sensor=[], action_dim=action_dim,
+                                             decision_type='pickup', pickup_candidates=candidates)
             else:
-                _rul, action, ok, _dev = self.bridge.request(step_id=self._step_id, agent_id=agent_label, env_obs=[], sensor=[],
-                                                             action_dim=action_dim, decision_type='pickup', pickup_candidates=candidates)
+                ret = self.bridge.request(step_id=self._step_id, agent_id=agent_label, env_obs=[], sensor=[],
+                                           action_dim=action_dim, decision_type='pickup', pickup_candidates=candidates)
+            if isinstance(ret, (tuple, list)):
+                if len(ret) == 5:
+                    _rul, action, _log_prob, ok, _dev = ret
+                else:
+                    _rul, action, ok, _dev = ret
         except Exception as e:
             print(f"[SERVER][ERROR] pickup request failed step={self._step_id} agent={agent_label}: {e}")
-            ok = False
-            action = None
-            _rul = None
+            ok = False; action = None; _rul = None
         if ok and isinstance(action, int):
             act = int(action) % action_dim
             self._last_action[agent_label] = act
@@ -260,7 +270,8 @@ def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, 
     buffer = None; value_norm = None
     try:
         sample_obs = next(iter(obs.values()))
-        obs_dim = len(sample_obs)
+        # Enforce obs = [RUL] + env vector
+        obs_dim = len(sample_obs) + 1
         if Dict is not None and Box is not None:
             share_obs_space = Dict({"global_obs": Box(low=-1, high=30000, shape=(obs_dim,))})
         else:
@@ -280,6 +291,8 @@ def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, 
         print(f"[TRAIN] init failed: {e}")
         enable_training = False
     pending = {}
+    # Cache last RUL per agent to reconstruct [RUL]+env for training and bootstrap
+    last_rul = {}
     try:
         while steps < max_steps:
             if steps % 10 == 0:
@@ -306,7 +319,14 @@ def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, 
                     if act is None:
                         act = random.randrange(action_dim)
                 actions[int(aid)] = int(act)
-                pending[int(aid)] = {'obs': list(o), 'action': int(act), 'log_prob': float(log_prob) if log_prob is not None else 0.0}
+                # Store training obs as [RUL] + env_obs consistently (dim=243)
+                try:
+                    rul_f = float(_rul)
+                except Exception:
+                    rul_f = 0.0
+                last_rul[int(aid)] = rul_f
+                combined_obs = [rul_f] + list(o)
+                pending[int(aid)] = {'obs': combined_obs, 'action': int(act), 'log_prob': float(log_prob) if log_prob is not None else 0.0}
                 if logger is not None:
                     try:
                         row = _collect_truck_row(f'truck_{aid}', env.truck_agents[aid], decision=True, dist_tracker=dist_tracker)
@@ -395,7 +415,10 @@ def run_demo_debug(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, 
                             for a in range(env.truck_num):
                                 nxt = obs_next.get(a)
                                 if nxt is None: continue
-                                nxt_t = torch.as_tensor(nxt, dtype=torch.float32).unsqueeze(0)
+                                # Reconstruct next obs as [last_rul] + env_next
+                                rul_next = float(last_rul.get(a, 0.0))
+                                nxt_vec = [rul_next] + list(nxt)
+                                nxt_t = torch.as_tensor(nxt_vec, dtype=torch.float32).unsqueeze(0)
                                 rs = critic_rnn.get(a, torch.zeros((1, critic._recurrent_N, critic.hidden_size), dtype=torch.float32))
                                 with torch.no_grad():
                                     nv_t, rs_new2 = critic(nxt_t, rs, torch.ones((1,1), dtype=torch.float32))
@@ -496,7 +519,8 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
     if enable_training:
         try:
             sample_obs = next(iter(obs.values()))
-            obs_dim = len(sample_obs)
+            # Enforce obs = [RUL] + env vector
+            obs_dim = len(sample_obs) + 1
             parser = _get_cfg()
             args_tmp = parser.parse_args([])
             args_tmp.use_recurrent_policy = True
@@ -613,8 +637,16 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
                         sensor_features = getattr(truck,'eng_obs',[])
                         act = policy.act(f'truck_{aid}', np.asarray(o,dtype=np.float32), sensor_features)
                     actions[int(aid)] = int(act)
+                    # Fetch last RUL from edge and store training obs as [RUL]+env
+                    rv = policy.get_last_rul(f'truck_{aid}')
+                    if rv is not None:
+                        try:
+                            env.truck_agents[aid].rul = float(rv)
+                        except Exception:
+                            pass
                     if enable_training:
-                        last_obs_store[int(aid)] = list(o)
+                        rul_f = float(rv) if rv is not None else 0.0
+                        last_obs_store[int(aid)] = [rul_f] + list(o)
                         last_action_store[int(aid)] = int(act)
                     if logger is not None:
                         try:
@@ -624,9 +656,7 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
                             print(f"[DB] decision log error truck_{aid}: {e}")
                     if actions:
                         print("decisions: " + ", ".join([f"agent{aid}->Factory{act}" for aid, act in actions.items()]))
-                    rv = policy.get_last_rul(f'truck_{aid}')
-                    if rv is not None:
-                        env.truck_agents[aid].rul = float(rv)
+                    # RUL already handled above
                 try:
                     env.gui_prepare_actions(actions)
                 except Exception as e:
@@ -694,8 +724,14 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
                                 continue
                             r = float(rewards.get(aid, 0.0)) if isinstance(rewards, dict) else 0.0
                             done_flag = bool(done[aid]) if isinstance(done, (list, np.ndarray, dict)) else False
+                            # Ensure next_obs is [RUL]+env using the last known RUL from env state
+                            try:
+                                rul_next = float(getattr(env.truck_agents[aid], 'rul', 0.0))
+                            except Exception:
+                                rul_next = 0.0
+                            next_combined = [rul_next] + list(next_obs)
                             prev_t = torch.as_tensor(prev_obs, dtype=torch.float32).unsqueeze(0)
-                            next_t = torch.as_tensor(next_obs, dtype=torch.float32).unsqueeze(0)
+                            next_t = torch.as_tensor(next_combined, dtype=torch.float32).unsqueeze(0)
                             rs = critic_rnn.get(aid, torch.zeros((1, critic._recurrent_N, critic.hidden_size), dtype=torch.float32))
                             masks = torch.ones((1,1), dtype=torch.float32)
                             with torch.no_grad():
@@ -718,7 +754,7 @@ def run_demo_gui(env_args: EnvArgs, max_steps: int, bridge_cfg: BridgeConfig, my
                                 'obs': prev_obs,
                                 'action': act_taken,
                                 'reward': r,
-                                'next_obs': list(next_obs),
+                                'next_obs': next_combined,
                                 'done': done_flag,
                                 'value': value,
                                 'next_value': next_value

@@ -44,16 +44,16 @@ Open four terminals and run one client per device. Replace `ACTOR_DIR` with your
 
 ```bash
 # Terminal 1
-python3 scripts/iot/device_client.py --device-id edge-00 
+python3 scripts/iot/edge_client.py --device-id edge-00 --host 192.168.1.210 --fresh-actor
 
 # Terminal 2
-python3 scripts/iot/device_client.py --device-id edge-01 
+python3 scripts/iot/edge_client.py --device-id edge-01 --host 192.168.1.210 --fresh-actor
 
 # Terminal 3
-python3 scripts/iot/device_client.py --device-id edge-02 
+python3 scripts/iot/edge_client.py --device-id edge-02 --host 192.168.1.210 --fresh-actor
 
 # Terminal 4
-python3 scripts/iot/device_client.py --device-id edge-03 
+python3 scripts/iot/edge_client.py --device-id edge-03 --host 192.168.1.210 --fresh-actor
 ```
 
 You should see at startup, before connecting to MQTT:
@@ -99,6 +99,8 @@ Edge clients:
 - `[CLIENT edge-YY] Pretrained RL actor loaded successfully from ... actor.pt obs_dim=243 action_dim=50 ...`
 - `[CLIENT edge-YY] recv step=... agent=truck_X seq=... action_dim=...`
 - `[CLIENT edge-YY] send step=... agent=truck_X seq=... action=... rul=...`
+
+Note: The observation vector is always `[RUL] + env` of length 243. The server reconstructs this for training using the RUL returned by the edge, and the edge actor always consumes `[RUL] + env` for inference.
 
 ## Troubleshooting
 

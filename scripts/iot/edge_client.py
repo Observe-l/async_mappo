@@ -156,6 +156,7 @@ class EdgeClient:
         self.actor = load_torchscript_model(actor_model)
         self.actor_dir = actor_dir
         self._actor_built = False
+        self._expected_obs_dim = None  # Will be set when actor dims are known
         # Instantiate TF predictor if TorchScript RUL model not supplied
         self.rul_predictor = None
         if self.gcpatr is None and RulPredictor is not None:
@@ -196,6 +197,7 @@ class EdgeClient:
                                     use_recurrent_policy=True,
                                     recurrent_N=6)
                 self._actor_built = True
+                self._expected_obs_dim = int(inferred_obs)
             except Exception as e:
                 print(f"[CLIENT {self.device_id}] initial actor load failed: {e}")
 
@@ -345,6 +347,10 @@ class EdgeClient:
             act_space = Discrete(action_dim)
             self.actor = TrainedPolicy(actor_dir=None, env_obs_space=obs_space, env_share_obs_space=obs_space, env_act_space=act_space, use_recurrent_policy=True, recurrent_N=6)
             print(f"[CLIENT {self.device_id}] fresh actor initialized obs_dim={obs_len} action_dim={action_dim}")
+            try:
+                self._expected_obs_dim = int(obs_len)
+            except Exception:
+                self._expected_obs_dim = obs_len
         except Exception as e:
             print(f"[CLIENT {self.device_id}] fresh actor init failed: {e}")
 
@@ -423,10 +429,13 @@ class EdgeClient:
         return 500.0 + random.random() * 100.0
 
     def infer_action(self, env_vec, rul, action_dim: int = 0):
+        # Always use [RUL] + env vector (obs_dim = 243)
+        combined = [float(rul)] + list(env_vec)
         if self.actor is not None:
             try:
-                act = int(self.actor.act([float(rul)] + list(env_vec)))
+                act = int(self.actor.act(combined))
                 lp = getattr(self.actor, '_last_log_prob', None)
+                self._expected_obs_dim = len(combined)
                 return act, lp
             except Exception as e:
                 print(f"[CLIENT {self.device_id}] actor inference error: {e}")

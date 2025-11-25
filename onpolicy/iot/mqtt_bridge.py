@@ -114,7 +114,7 @@ class MqttBridge:
                 decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], Optional[float], bool, str]:
         """Send one observation to a device and wait for result.
 
-        Returns (rul, action, ok, device_id). If timeout, ok=False and defaults provided.
+        Returns (rul, action, log_prob, ok, device_id). If timeout, ok=False and defaults provided.
         """
         device_id = self.next_device()
         return self.request_to(device_id=device_id, step_id=step_id, agent_id=agent_id, env_obs=env_obs, sensor=sensor,
@@ -122,7 +122,10 @@ class MqttBridge:
 
     def request_to(self, *, device_id: str, step_id: int, agent_id: str, env_obs, sensor, action_dim: Optional[int] = None,
                    decision_type: str = "rl", pickup_candidates: Optional[list] = None) -> Tuple[float, Optional[int], Optional[float], bool, str]:
-        """Send request to a specific device id (no round robin)."""
+        """Send request to a specific device id (no round robin).
+
+        Returns (rul, action, log_prob, ok, device_id).
+        """
         seq = self.new_seq()
         key = (step_id, agent_id, seq)
 
