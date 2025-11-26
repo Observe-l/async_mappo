@@ -1,9 +1,3 @@
-Here is the updated and consolidated design specification. This document integrates your legacy features (MQTT, Camera Tracking) with the new data comparison requirements and the specific profit formula.
-
-Save this content as **`DASHBOARD_SPEC_V2.md`** and use it as your implementation guide.
-
------
-
 # Project Specification: HUD Dashboard with Model Comparison
 
 **Target File:** `script/render/run_demo_dashboard_v2.py`
