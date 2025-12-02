@@ -547,7 +547,7 @@ def main():
     parser.add_argument("--use-rul-agent", action="store_true", default=True)
     parser.add_argument("--rul-threshold", type=float, default=7.0)
     parser.add_argument("--rul-state",default=True, action="store_true")
-    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=10000)
     parser.add_argument("--debug",default=True, action="store_true")
     parser.add_argument("--use-recurrent-policy", action="store_true", default=True)
     parser.add_argument("--recurrent_N", type=int, default=6)

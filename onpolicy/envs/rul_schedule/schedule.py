@@ -251,6 +251,7 @@ class async_scheduling(object):
         self.agent_file = folder_path + 'result.csv'
         self.distance_file = folder_path + 'distance.csv'
         self.truck_state = folder_path + 'truck_state.csv'
+        self.delivery_goods_file = folder_path + 'delivery_goods.csv'
 
         # Create result file
         with open(self.product_file,'w') as f:
@@ -285,6 +286,11 @@ class async_scheduling(object):
         with open(self.truck_state, 'w') as f:
             f_csv = writer(f)
             result_list = ['time', 'normal_num', 'broken_num', 'maintain_num', 'broken_id', 'maintain_id']
+            f_csv.writerow(result_list)
+        
+        with open(self.delivery_goods_file, 'w') as f:
+            f_csv = writer(f)
+            result_list = ['time', 'delivery_goods']
             f_csv.writerow(result_list)
 
 
@@ -341,6 +347,15 @@ class async_scheduling(object):
             truck_state_list += [normal_num, broken_num, maintain_num]
             truck_state_list += [broken_id, maintain_id]
             f_csv.writerow(truck_state_list)
+        
+        with open(self.delivery_goods_file, 'a') as f:
+            f_csv = writer(f)
+            delivery_goods_list = [current_time]
+            total_delivery_goods = 0
+            for tmp_agent in self.truck_agents:
+                total_delivery_goods += tmp_agent.total_transported
+            delivery_goods_list += [total_delivery_goods]
+            f_csv.writerow(delivery_goods_list)
 
     def record_debug(self, time, action_dict):
         '''Record the debug information'''

@@ -15,11 +15,14 @@ from onpolicy.envs.rul_schedule.rul_gen import predictor
 import datetime
 import random
 import string
-# Prefer libsumo if available; otherwise fall back to traci (pure-Python)
+# Prefer standard traci for stability with GUI, fallback to libsumo if needed
 try:
-    import libsumo as traci
+    import traci
 except Exception:
-    import traci  # type: ignore
+    try:
+        import libsumo as traci
+    except Exception:
+        raise ImportError("Neither traci nor libsumo found")
 
 class async_scheduling(object):
     def __init__(self, args):
@@ -144,11 +147,17 @@ class async_scheduling(object):
             start_t = traci.simulation.getTime()
         except Exception:
             start_t = None
+            
+        steps_run = 0
+        SAFETY_LIMIT = 100000 # Prevent infinite loops
+        
         while True:
             self.producer.produce_step()
             traci.simulationStep()
             self.episode_len += 1
             self._gui_step_length += 1
+            steps_run += 1
+            
             # Update RUL & potential maintenance
             ready_flag = False
             for tmp_truck in self.truck_agents:
@@ -162,14 +171,20 @@ class async_scheduling(object):
                         ready_flag = True
             if ready_flag:
                 return True
+                
             # Check SUMO-time budget
             if start_t is not None:
                 try:
                     cur_t = traci.simulation.getTime()
+                    if (cur_t - start_t) >= max_sim_seconds:
+                        return False
                 except Exception:
-                    cur_t = start_t
-                if (cur_t - start_t) >= max_sim_seconds:
-                    return False
+                    pass # Ignore time check errors, rely on safety limit
+            
+            # Safety Break
+            if steps_run >= SAFETY_LIMIT:
+                print(f"[WARNING] gui_tick_until_operable hit safety limit ({SAFETY_LIMIT} steps). Breaking loop.")
+                return False
 
     def gui_finalize_step(self):
         """Finish the logical environment step once operable trucks are available.
@@ -360,6 +375,7 @@ class async_scheduling(object):
         self.agent_file = folder_path + 'result.csv'
         self.distance_file = folder_path + 'distance.csv'
         self.truck_state = folder_path + 'truck_state.csv'
+        self.delivery_goods_file = folder_path + 'delivery_goods.csv'
 
         # Create result file
         with open(self.product_file,'w') as f:
@@ -394,6 +410,11 @@ class async_scheduling(object):
         with open(self.truck_state, 'w') as f:
             f_csv = writer(f)
             result_list = ['time', 'normal_num', 'broken_num', 'maintain_num', 'broken_id', 'maintain_id']
+            f_csv.writerow(result_list)
+        
+        with open(self.delivery_goods_file, 'w') as f:
+            f_csv = writer(f)
+            result_list = ['time', 'delivery_goods']
             f_csv.writerow(result_list)
 
 
@@ -450,6 +471,15 @@ class async_scheduling(object):
             truck_state_list += [normal_num, broken_num, maintain_num]
             truck_state_list += [broken_id, maintain_id]
             f_csv.writerow(truck_state_list)
+        
+        with open(self.delivery_goods_file, 'a') as f:
+            f_csv = writer(f)
+            delivery_goods_list = [current_time]
+            total_delivery_goods = 0
+            for tmp_agent in self.truck_agents:
+                total_delivery_goods += tmp_agent.total_transported
+            delivery_goods_list += [total_delivery_goods]
+            f_csv.writerow(delivery_goods_list)
 
     def record_debug(self, time, action_dict):
         '''Record the debug information'''

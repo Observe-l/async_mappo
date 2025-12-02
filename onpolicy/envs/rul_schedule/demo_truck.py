@@ -8,7 +8,7 @@ import random
 
 class Truck(object):
     def __init__(self, truck_id:str = 'truck_0', capacity:float = 5.0, weight:float = 0.0,\
-                 state:str = 'waiting', product:str = 'P1', eng_time:int = 100, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
+                 state:str = 'waiting', product:str = 'P1', eng_time:int = 500, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
         self.id = truck_id
         self.capacity = capacity
         # Time delay of loading and unloading
@@ -46,6 +46,8 @@ class Truck(object):
         self.load_time = 0
         # Record the reward
         self.cumulate_reward = 0.0
+
+        self.total_transported = 0.0
 
         # reset the driving distance
         self.driving_distance = 0.0
@@ -124,7 +126,7 @@ class Truck(object):
         '''
         Update the status of the truck
         '''
-        # Check current location, if the vehicle remove by SUMO, add it first
+        # Check current location, if the vehicle remove by SUMself.total_transportedO, add it first
         try:
             tmp_pk = traci.vehicle.getStops(vehID=self.id)
             parking_state = tmp_pk[-1]
@@ -264,6 +266,11 @@ class Truck(object):
         self.product = None
         self.operable_flag = False
         self.last_transport += self.capacity
+        # Add to cumulative transported
+        try:
+            self.total_transported += self.capacity
+        except Exception:
+            self.total_transported = self.capacity
 
     def get_truck_product(self) -> int:
         if self.product is None:

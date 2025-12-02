@@ -19,7 +19,8 @@ from typing import Dict as _Dict, Optional as _Optional
 
 # PyQt5 Imports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                             QWidget, QLabel, QFrame, QProgressBar)
+                             QWidget, QLabel, QFrame, QProgressBar, QComboBox, QCheckBox, 
+                             QGroupBox, QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont, QColor, QPalette
 
@@ -34,10 +35,14 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 # SUMO & RL Imports
+# Prefer standard traci for stability with GUI
 try:
-    import libsumo as traci
+    import traci
 except Exception:
-    import traci  # type: ignore
+    try:
+        import libsumo as traci
+    except Exception:
+        raise ImportError("Neither traci nor libsumo found")
 
 import torch
 from onpolicy.config import get_config as _get_cfg
@@ -259,6 +264,14 @@ class BaselineLoader:
         """Returns full dataset for plotting as reference"""
         return self.steps, self.total_product, self.profit
 
+    def get_data_until(self, time_seconds):
+        """Returns data sliced up to the given simulation time"""
+        if len(self.steps) == 0:
+            return [], [], []
+        # Assuming self.steps is sorted
+        mask = self.steps <= time_seconds
+        return self.steps[mask], self.total_product[mask], self.profit[mask]
+
 # -----------------------------------------------------------------------------
 # HUD Dashboard Class
 # -----------------------------------------------------------------------------
@@ -293,6 +306,7 @@ class HUD_Dashboard(QMainWindow):
         self.current_prod = 0
         self.current_dist_sum = 0.0
         self.step_count = 0
+        self.last_chart_update = -100.0
         
         # RL State
         self.obs = None
@@ -329,19 +343,22 @@ class HUD_Dashboard(QMainWindow):
         fixed_map = {f'truck_{i}': device_ids[i] for i in range(min(self.env.truck_num, len(device_ids)))}
         
         self.policy = RemotePolicy(self.bridge, action_dim, device_map=fixed_map)
-        self.truck_ids = []
+        self.truck_ids = [f'truck_{i}' for i in range(self.env.truck_num)]
 
     def init_ui_elements(self):
-        layout = QVBoxLayout(self.central_widget)
+        main_layout = QVBoxLayout(self.central_widget)
         
         # Header
-        header = QLabel("Async-MAPPO Logistics HUD | Live vs Pretrained")
+        header = QLabel("MAILS | Live vs Pretrained")
         header.setAlignment(Qt.AlignCenter)
         header.setStyleSheet("font-size: 18px; font-weight: bold; color: #00ffff; margin-bottom: 10px;")
-        layout.addWidget(header)
+        main_layout.addWidget(header)
         
-        # Charts Layout
-        charts_layout = QHBoxLayout()
+        # Content Area (Charts + Controls)
+        content_layout = QHBoxLayout()
+        
+        # Left: Charts
+        charts_layout = QVBoxLayout()
         
         # Chart 1: Production
         self.fig1 = Figure(figsize=(4, 3), dpi=100)
@@ -358,12 +375,86 @@ class HUD_Dashboard(QMainWindow):
         charts_layout.addWidget(self.canvas1)
         charts_layout.addWidget(self.canvas2)
         
-        layout.addLayout(charts_layout)
+        content_layout.addLayout(charts_layout, stretch=2)
+        
+        # Right: Control & Info Panel
+        info_layout = QVBoxLayout()
+        self.init_control_panel(info_layout)
+        content_layout.addLayout(info_layout, stretch=1)
+        
+        main_layout.addLayout(content_layout)
         
         # Footer / Status
         self.status_label = QLabel("Status: Running")
         self.status_label.setAlignment(Qt.AlignRight)
-        layout.addWidget(self.status_label)
+        main_layout.addWidget(self.status_label)
+
+    def init_control_panel(self, parent_layout):
+        # 1. Control Group
+        ctrl_group = QGroupBox("Camera Control")
+        ctrl_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: #ffd700; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
+        ctrl_layout = QGridLayout()
+        
+        ctrl_layout.addWidget(QLabel("Track Truck:"), 0, 0)
+        self.truck_combo = QComboBox()
+        self.truck_combo.addItems(self.truck_ids)
+        self.truck_combo.currentIndexChanged.connect(self.update_camera)
+        ctrl_layout.addWidget(self.truck_combo, 0, 1)
+        
+        self.cam_check = QCheckBox("Camera Follow")
+        self.cam_check.setChecked(True)
+        self.cam_check.stateChanged.connect(self.update_camera)
+        ctrl_layout.addWidget(self.cam_check, 1, 0, 1, 2)
+        
+        ctrl_group.setLayout(ctrl_layout)
+        parent_layout.addWidget(ctrl_group)
+        
+        # 2. Info Group
+        info_group = QGroupBox("Truck Status")
+        info_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: #39ff14; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
+        info_layout = QGridLayout()
+        
+        self.lbl_status = QLabel("-")
+        self.lbl_dist = QLabel("0.0 m")
+        self.lbl_dest = QLabel("-")
+        self.lbl_road = QLabel("-")
+        self.lbl_rul = QLabel("-")
+        self.lbl_cargo = QLabel("-")
+        
+        def add_row(row, label, widget):
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: #aaa;")
+            info_layout.addWidget(lbl, row, 0)
+            widget.setStyleSheet("color: white; font-weight: bold;")
+            info_layout.addWidget(widget, row, 1)
+
+        add_row(0, "Status:", self.lbl_status)
+        add_row(1, "Distance:", self.lbl_dist)
+        add_row(2, "Destination:", self.lbl_dest)
+        add_row(3, "Road:", self.lbl_road)
+        add_row(4, "RUL:", self.lbl_rul)
+        add_row(5, "Cargo:", self.lbl_cargo)
+        
+        info_group.setLayout(info_layout)
+        parent_layout.addWidget(info_group)
+        
+        # 3. Fleet Summary Table
+        table_group = QGroupBox("Fleet Summary")
+        table_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: white; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
+        table_layout = QVBoxLayout()
+        
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(['ID', 'Status', 'Dist', 'Dest', 'Road'])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.setStyleSheet("QTableWidget { background-color: transparent; color: white; gridline-color: #444; border: none; } QHeaderView::section { background-color: #2b2b2b; color: white; border: 1px solid #444; }")
+        
+        table_layout.addWidget(self.table)
+        table_group.setLayout(table_layout)
+        parent_layout.addWidget(table_group)
+        
+        parent_layout.addStretch() # Push everything up
 
     def setup_chart(self, fig, ax, title):
         fig.patch.set_facecolor('none') # Transparent figure background
@@ -388,44 +479,112 @@ class HUD_Dashboard(QMainWindow):
         
         current_sim_time = traci.simulation.getTime()
 
-        # 2. Legacy: Camera Track
-        self.camera_track_logic()
+        # 2. Update Info Panel (Camera & Labels) - Frequent Update
+        self.refresh_info_panel()
 
-        # 4. Calculate Live Metrics
-        if not self.truck_ids:
-            self.truck_ids = [f'truck_{i}' for i in range(self.env.truck_num)]
-        
-        # A. Distance
-        # Use DistanceTracker for robust cumulative distance
-        total_distance_m = 0.0
-        for tid in self.truck_ids:
-            total_distance_m += self.dist_tracker.total_m(tid)
-        self.current_dist_sum = total_distance_m
-        
-        # B. Production
-        final_factories = ["Factory45", "Factory46", "Factory47", "Factory48", "Factory49"]
-        current_prod = 0
-        for fid in final_factories:
-            if fid in self.env.factory:
-                current_prod += self.env.factory[fid].total_final_product
-        self.current_prod = current_prod
+        # 4. Calculate Live Metrics & Update Charts - Throttled Update (every 100s)
+        if current_sim_time - self.last_chart_update >= 100.0:
+            if not self.truck_ids:
+                self.truck_ids = [f'truck_{i}' for i in range(self.env.truck_num)]
+            
+            # A. Distance
+            total_distance_m = 0.0
+            for tid in self.truck_ids:
+                total_distance_m += self.dist_tracker.total_m(tid)
+            self.current_dist_sum = total_distance_m
+            
+            # B. Production
+            final_factories = ["Factory45", "Factory46", "Factory47", "Factory48", "Factory49"]
+            current_prod = 0
+            for fid in final_factories:
+                if fid in self.env.factory:
+                    current_prod += self.env.factory[fid].total_final_product
+            self.current_prod = current_prod
 
-        # C. Profit Formula
-        # Profit = (Prod * 10) - (Dist * 0.00001)
-        current_profit = (self.current_prod * 10) - (self.current_dist_sum * 0.00001)
-        
-        # 5. Store Data
-        # We use step count or sim time for x-axis. 
-        # Baseline uses 'time' column which is hours. 
-        # Let's use hours for x-axis to match baseline if possible, or just raw seconds/steps.
-        # BaselineLoader converts time to seconds if 'time' column exists.
-        self.live_steps.append(current_sim_time)
-        self.live_prod.append(self.current_prod)
-        self.live_profit.append(current_profit)
+            # C. Profit Formula
+            current_profit = (self.current_prod * 10) - (self.current_dist_sum * 0.00001)
+            
+            # 5. Store Data
+            self.live_steps.append(current_sim_time)
+            self.live_prod.append(self.current_prod)
+            self.live_profit.append(current_profit)
 
-        # 6. Refresh UI (Visual Comparison)
-        if len(self.live_steps) % 5 == 0: # Update every 5 steps to save CPU
+            # 6. Refresh UI
             self.redraw_charts()
+            self.last_chart_update = current_sim_time
+
+    def refresh_info_panel(self):
+        """Update truck status labels, camera tracking, and fleet table"""
+        try:
+            # Update Single Truck Info
+            tid = self.truck_combo.currentText()
+            if tid:
+                idx = int(tid.split('_')[-1])
+                t = self.env.truck_agents[idx]
+                
+                self.lbl_status.setText(str(t.state))
+                try:
+                    dist_m = self.dist_tracker.total_m(tid)
+                except Exception:
+                    dist_m = getattr(t, 'total_distance', 0.0)
+                self.lbl_dist.setText(f"{dist_m:.1f} m")
+                self.lbl_dest.setText(str(t.destination))
+                self.lbl_rul.setText(f"{getattr(t,'rul',0.0):.1f}")
+                self.lbl_cargo.setText(f"{t.product}, {t.weight:.1f}")
+                try:
+                    road_id = traci.vehicle.getRoadID(tid)
+                except Exception:
+                    road_id = '-'
+                self.lbl_road.setText(str(road_id)[:9]) # Truncate road ID
+
+            # Update Fleet Table
+            self.table.setRowCount(self.env.truck_num)
+            for i in range(self.env.truck_num):
+                vid = f'truck_{i}'
+                agent = self.env.truck_agents[i]
+                
+                try:
+                    v_dist = self.dist_tracker.total_m(vid)
+                except:
+                    v_dist = getattr(agent, 'total_distance', 0.0)
+                
+                try:
+                    v_road = traci.vehicle.getRoadID(vid)
+                except:
+                    v_road = '-'
+                
+                # Create Items
+                item_id = QTableWidgetItem(str(i))
+                item_status = QTableWidgetItem(str(agent.state))
+                item_dist = QTableWidgetItem(f"{v_dist:.0f}")
+                item_dest = QTableWidgetItem(str(agent.destination))
+                item_road = QTableWidgetItem(str(v_road)[:9])
+                
+                # Center align
+                for it in [item_id, item_status, item_dist, item_dest, item_road]:
+                    it.setTextAlignment(Qt.AlignCenter)
+                
+                self.table.setItem(i, 0, item_id)
+                self.table.setItem(i, 1, item_status)
+                self.table.setItem(i, 2, item_dist)
+                self.table.setItem(i, 3, item_dest)
+                self.table.setItem(i, 4, item_road)
+
+        except Exception:
+            pass
+
+    def update_camera(self):
+        """Handle camera tracking logic"""
+        if self.env.use_gui:
+            try:
+                views = list(traci.gui.getIDList())
+                if views:
+                    if self.cam_check.isChecked():
+                        traci.gui.trackVehicle(views[0], self.truck_combo.currentText())
+                    else:
+                        traci.gui.trackVehicle(views[0], "")
+            except Exception:
+                pass
 
     def run_rl_step(self):
         """Executes one step of the RL/SUMO loop (adapted from run_dashboard.py)"""
@@ -450,20 +609,28 @@ class HUD_Dashboard(QMainWindow):
                     self.waiting_for_action = True
                 except Exception as e:
                     print(f"Env prepare error: {e}")
-                    self.timer.stop()
+                    import traceback
+                    traceback.print_exc()
+                    # self.timer.stop()
             else:
                 try:
                     self.env.producer.produce_step()
                     traci.simulationStep()
                     self.step_count += 1
-                except Exception: pass
+                except Exception as e:
+                    print(f"Env step error: {e}")
+                    import traceback
+                    traceback.print_exc()
         else:
             try:
-                ready = self.env.gui_tick_until_operable(max_sim_seconds=1.0)
+                # Increase max_sim_seconds to allow faster skipping of idle time (e.g. when all trucks are broken)
+                ready = self.env.gui_tick_until_operable(max_sim_seconds=100.0)
                 self.step_count += 1
             except Exception as e:
                 print(f"Env tick error: {e}")
-                self.timer.stop()
+                import traceback
+                traceback.print_exc()
+                # self.timer.stop()
                 return
             if ready:
                 try:
@@ -472,43 +639,51 @@ class HUD_Dashboard(QMainWindow):
                     self.waiting_for_action = False
                 except Exception as e:
                     print(f"Env finalize error: {e}")
-                    self.timer.stop()
+                    import traceback
+                    traceback.print_exc()
+                    # self.timer.stop()
 
-    def camera_track_logic(self):
-        """Auto-follow the first truck"""
-        if self.env.use_gui:
-            try:
-                views = list(traci.gui.getIDList())
-                if views:
-                    # Track truck_0 by default
-                    traci.gui.trackVehicle(views[0], "truck_0")
-            except Exception:
-                pass
+    # Removed camera_track_logic as it is replaced by update_camera and refresh_info_panel
 
     def redraw_charts(self):
+        # Determine X-Axis Unit (Seconds or Hours)
+        current_max_time = self.live_steps[-1] if self.live_steps else 0
+        use_hours = current_max_time > 3600 # Switch to hours after 1 hour
+        
+        x_label = "Time (h)" if use_hours else "Time (s)"
+        divisor = 3600.0 if use_hours else 1.0
+        
+        # Prepare Live Data
+        live_x = [t / divisor for t in self.live_steps]
+        
+        # Prepare Baseline Data (Synchronized)
+        # Only show baseline up to current simulation time
+        b_steps, b_prod, b_profit = self.baseline.get_data_until(current_max_time)
+        b_x = b_steps / divisor
+
         # 1. Production Chart
         self.ax1.clear()
-        # Plot Baseline (Full)
-        b_steps, b_prod, _ = self.baseline.get_full_data()
-        self.ax1.plot(b_steps, b_prod, color='gray', linestyle='--', alpha=0.6, label='Pretrained')
+        # Plot Baseline (Synchronized)
+        if len(b_x) > 0:
+            self.ax1.plot(b_x, b_prod, color='gray', linestyle='--', alpha=0.6, label='Pretrained')
         # Plot Live
-        self.ax1.plot(self.live_steps, self.live_prod, color='#39ff14', linewidth=2, label='Live')
+        self.ax1.plot(live_x, self.live_prod, color='#39ff14', linewidth=2, label='Live')
         self.ax1.legend(facecolor='#2b2b2b', labelcolor='white', fontsize='small')
         self.ax1.set_title("Production", color='white')
-        self.ax1.set_xlabel("Time (s)", color='white')
+        self.ax1.set_xlabel(x_label, color='white')
         self.ax1.grid(True, color='#444', linestyle=':', alpha=0.5)
         self.canvas1.draw()
         
         # 2. Profit Chart
         self.ax2.clear()
-        # Plot Baseline (Full)
-        b_steps, _, b_profit = self.baseline.get_full_data()
-        self.ax2.plot(b_steps, b_profit, color='gray', linestyle='--', alpha=0.6, label='Pretrained')
+        # Plot Baseline (Synchronized)
+        if len(b_x) > 0:
+            self.ax2.plot(b_x, b_profit, color='gray', linestyle='--', alpha=0.6, label='Pretrained')
         # Plot Live
-        self.ax2.plot(self.live_steps, self.live_profit, color='#ffd700', linewidth=2, label='Live')
+        self.ax2.plot(live_x, self.live_profit, color='#ffd700', linewidth=2, label='Live')
         self.ax2.legend(facecolor='#2b2b2b', labelcolor='white', fontsize='small')
         self.ax2.set_title("Profit", color='white')
-        self.ax2.set_xlabel("Time (s)", color='white')
+        self.ax2.set_xlabel(x_label, color='white')
         self.ax2.grid(True, color='#444', linestyle=':', alpha=0.5)
         self.canvas2.draw()
 

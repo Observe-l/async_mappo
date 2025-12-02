@@ -1,14 +1,17 @@
 import numpy as np
-# Prefer libsumo if available; otherwise fall back to traci
+# Prefer standard traci for stability with GUI
 try:
-    import libsumo as traci
+    import traci
 except Exception:
-    import traci  # type: ignore
+    try:
+        import libsumo as traci
+    except Exception:
+        raise ImportError("Neither traci nor libsumo found")
 import random
 
 class Truck(object):
     def __init__(self, truck_id:str = 'truck_0', capacity:float = 5.0, weight:float = 0.0,\
-                 state:str = 'waiting', product:str = 'P1', eng_time:int = 100, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
+                 state:str = 'waiting', product:str = 'P1', eng_time:int = 500, lw:int = 40, maintain_time:int = 6*3600, broken_time:int = 2*24*3600, map_data:dict = None, factory_edge:dict | None = None) -> None:
         self.id = truck_id
         self.capacity = capacity
         # Time delay of loading and unloading
@@ -134,6 +137,7 @@ class Truck(object):
         # Check current location, if the vehicle remove by SUMO, add it first
         try:
             tmp_pk = traci.vehicle.getStops(vehID=self.id)
+            if not tmp_pk: raise Exception("No stops found")
             parking_state = tmp_pk[-1]
         except:
             try:
@@ -144,11 +148,16 @@ class Truck(object):
                 # print(f'{self.id} has been deleted')
                 # print(f'weight: {self.weight}, mdp state: {self.mk_state}')
                 pass
-            traci.vehicle.add(vehID=self.id,routeID=self.destination + '_to_'+ self.destination, typeID='truck')
-            traci.vehicle.setParkingAreaStop(vehID=self.id,stopID=self.destination)
-            traci.vehicle.setColor(typeID=self.id,color=self.color)
-            tmp_pk = traci.vehicle.getStops(vehID=self.id)
-            parking_state = tmp_pk[-1]
+            
+            try:
+                traci.vehicle.add(vehID=self.id,routeID=self.destination + '_to_'+ self.destination, typeID='truck')
+                traci.vehicle.setParkingAreaStop(vehID=self.id,stopID=self.destination)
+                traci.vehicle.setColor(typeID=self.id,color=self.color)
+                tmp_pk = traci.vehicle.getStops(vehID=self.id)
+                parking_state = tmp_pk[-1]
+            except Exception as e:
+                # print(f"Failed to recover truck {self.id}: {e}")
+                return
 
         self.position = parking_state.stoppingPlaceID
 

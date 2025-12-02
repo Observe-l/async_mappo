@@ -66,7 +66,7 @@ The dashboard will contain **3 Charts**. Each chart must plot **two lines**:
       * **Legend Label:** "Current Model"
       * *Note:* This line updates dynamically every step.
 
------
+-----The problem still there. Please run the demo program, 
 
 ## 4\. Implementation Logic & Code Structure
 
