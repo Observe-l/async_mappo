@@ -54,7 +54,7 @@ from onpolicy.envs.demo.mqtt_demo import async_scheduling
 from onpolicy.iot.mqtt_bridge import MqttBridge, BridgeConfig
 
 # --- Path Configuration ---
-BASE_PATH = "/home/lwh/Documents/Code/RL-Scheduling/result/rul_threshold_7/async_mappo/2025-05-03-00-20/exp_hpAM/1000"
+BASE_PATH = "/home/lwh/Documents/Code/RL-Scheduling/result/rul_threshold/async_mappo/2025-12-02-14-08/exp_UYHf/1"
 
 # -----------------------------------------------------------------------------
 # Custom Environment Wrapper for Dashboard Layout
@@ -223,6 +223,7 @@ class BaselineLoader:
         try:
             # 1. Load Files
             df_prod = pd.read_csv(f"{base_path}/product.csv")
+            df_deliv = pd.read_csv(f"{base_path}/delivery_goods.csv")
             df_dist = pd.read_csv(f"{base_path}/distance.csv")
             # df_res = pd.read_csv(f"{base_path}/result.csv") # Optional if you need reward
 
@@ -231,13 +232,19 @@ class BaselineLoader:
             # Let's clean column names just in case (strip spaces)
             df_dist.columns = df_dist.columns.str.strip()
             df_prod.columns = df_prod.columns.str.strip()
+            df_deliv.columns = df_deliv.columns.str.strip()
 
             # 3. Calculate Aggregates
             # Sum all 'total_truck_X' columns for total distance
             truck_cols = [c for c in df_dist.columns if 'total_' in c and 'truck' in c]
             self.total_distance = df_dist[truck_cols].sum(axis=1)
             
+            # Production (Total Final Product)
             self.total_product = df_prod['total']
+            
+            # Delivery Goods
+            self.delivery_goods = df_deliv['delivery_goods']
+            
             # Assuming 10 is your step interval, adjust if needed. 
             # Based on previous scripts, logging might be every step or interval.
             # Let's assume the index corresponds to the logging interval.
@@ -251,14 +258,23 @@ class BaselineLoader:
                  self.steps = df_prod.index * 10 
             
             # 4. Calculate Profit (The Formula)
-            # Profit = (Prod * 10) - (Dist * 0.00001)
-            self.profit = (self.total_product * 10) - (self.total_distance * 0.00001)
+            # Profit = (Prod * 10) - (Dist * 0.00001) + (1 * DeliveryGoods)
+            
+            # Truncate to min length to be safe
+            min_len = min(len(self.total_product), len(self.total_distance), len(self.delivery_goods))
+            self.total_product = self.total_product.iloc[:min_len]
+            self.total_distance = self.total_distance.iloc[:min_len]
+            self.delivery_goods = self.delivery_goods.iloc[:min_len]
+            self.steps = self.steps.iloc[:min_len]
+
+            self.profit = (self.total_product * 10) - (self.total_distance * 0.00001) + (self.delivery_goods * 0.5)
             print(f"[BASELINE] Loaded {len(self.steps)} data points")
         except Exception as e:
             print(f"[BASELINE] Error loading data: {e}")
             self.steps = []
             self.total_product = []
             self.profit = []
+            self.delivery_goods = []
 
     def get_full_data(self):
         """Returns full dataset for plotting as reference"""
@@ -270,7 +286,7 @@ class BaselineLoader:
             return [], [], []
         # Assuming self.steps is sorted
         mask = self.steps <= time_seconds
-        return self.steps[mask], self.total_product[mask], self.profit[mask]
+        return self.steps[mask], self.delivery_goods[mask], self.profit[mask]
 
 # -----------------------------------------------------------------------------
 # HUD Dashboard Class
@@ -285,8 +301,8 @@ class HUD_Dashboard(QMainWindow):
         # --- UI Setup: Translucent & Frameless ---
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        # Move Dashboard to the right side (960, 50) to avoid blocking SUMO (0,0)
-        self.setGeometry(960, 50, 900, 600)
+        # Move Dashboard to the right side (960, 0) to match SUMO height
+        self.setGeometry(960, 0, 960, 1000)
         
         # Create semi-transparent background
         self.central_widget = QWidget()
@@ -349,9 +365,9 @@ class HUD_Dashboard(QMainWindow):
         main_layout = QVBoxLayout(self.central_widget)
         
         # Header
-        header = QLabel("MAILS | Live vs Pretrained")
+        header = QLabel("MAILS HUD | Live vs Pretrained")
         header.setAlignment(Qt.AlignCenter)
-        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #00ffff; margin-bottom: 10px;")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: white; margin-bottom: 10px;")
         main_layout.addWidget(header)
         
         # Content Area (Charts + Controls)
@@ -387,23 +403,33 @@ class HUD_Dashboard(QMainWindow):
         # Footer / Status
         self.status_label = QLabel("Status: Running")
         self.status_label.setAlignment(Qt.AlignRight)
+        self.status_label.setStyleSheet("color: white;")
         main_layout.addWidget(self.status_label)
 
     def init_control_panel(self, parent_layout):
         # 1. Control Group
         ctrl_group = QGroupBox("Camera Control")
-        ctrl_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: #ffd700; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
+        ctrl_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: white; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         ctrl_layout = QGridLayout()
         
         ctrl_layout.addWidget(QLabel("Track Truck:"), 0, 0)
         self.truck_combo = QComboBox()
         self.truck_combo.addItems(self.truck_ids)
         self.truck_combo.currentIndexChanged.connect(self.update_camera)
+        self.truck_combo.setStyleSheet("""
+            QComboBox { color: white; background-color: #333; border: 1px solid #555; padding: 5px; }
+            QComboBox QAbstractItemView { color: white; background-color: #333; selection-background-color: #555; }
+        """)
         ctrl_layout.addWidget(self.truck_combo, 0, 1)
         
         self.cam_check = QCheckBox("Camera Follow")
         self.cam_check.setChecked(True)
         self.cam_check.stateChanged.connect(self.update_camera)
+        self.cam_check.setStyleSheet("""
+            QCheckBox { color: white; spacing: 5px; }
+            QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #555; background-color: #333; }
+            QCheckBox::indicator:checked { background-color: #39ff14; border: 1px solid #39ff14; }
+        """)
         ctrl_layout.addWidget(self.cam_check, 1, 0, 1, 2)
         
         ctrl_group.setLayout(ctrl_layout)
@@ -411,7 +437,7 @@ class HUD_Dashboard(QMainWindow):
         
         # 2. Info Group
         info_group = QGroupBox("Truck Status")
-        info_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: #39ff14; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
+        info_group.setStyleSheet("QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; font-weight: bold; color: white; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         info_layout = QGridLayout()
         
         self.lbl_status = QLabel("-")
@@ -467,6 +493,14 @@ class HUD_Dashboard(QMainWindow):
         ax.spines['left'].set_color('white')
         ax.spines['right'].set_color('white')
         ax.grid(True, color='#444', linestyle=':', alpha=0.5)
+        
+        # Set label colors to white
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        
+        # Ensure legend text is white if legend exists
+        if ax.get_legend():
+            plt.setp(ax.get_legend().get_texts(), color='white')
 
     def update_loop(self):
         if traci.simulation.getMinExpectedNumber() <= 0:
@@ -501,12 +535,18 @@ class HUD_Dashboard(QMainWindow):
                     current_prod += self.env.factory[fid].total_final_product
             self.current_prod = current_prod
 
-            # C. Profit Formula
-            current_profit = (self.current_prod * 10) - (self.current_dist_sum * 0.00001)
+            # C. Delivery Goods
+            current_delivery = 0.0
+            for t in self.env.truck_agents:
+                current_delivery += getattr(t, 'total_transported', 0.0)
+
+            # D. Profit Formula
+            # Profit = (Prod * 10) - (Dist * 0.00001) + (1 * DeliveryGoods)
+            current_profit = (self.current_prod * 10) - (self.current_dist_sum * 0.00001) + (current_delivery * 1)
             
             # 5. Store Data
             self.live_steps.append(current_sim_time)
-            self.live_prod.append(self.current_prod)
+            self.live_prod.append(current_delivery)
             self.live_profit.append(current_profit)
 
             # 6. Refresh UI
@@ -624,7 +664,7 @@ class HUD_Dashboard(QMainWindow):
         else:
             try:
                 # Increase max_sim_seconds to allow faster skipping of idle time (e.g. when all trucks are broken)
-                ready = self.env.gui_tick_until_operable(max_sim_seconds=100.0)
+                ready = self.env.gui_tick_until_operable(max_sim_seconds=10.0)
                 self.step_count += 1
             except Exception as e:
                 print(f"Env tick error: {e}")
@@ -665,9 +705,9 @@ class HUD_Dashboard(QMainWindow):
         self.ax1.clear()
         # Plot Baseline (Synchronized)
         if len(b_x) > 0:
-            self.ax1.plot(b_x, b_prod, color='gray', linestyle='--', alpha=0.6, label='Pretrained')
+            self.ax1.plot(b_x, b_prod, color='red', linestyle='-', alpha=0.6, label='Pretrained')
         # Plot Live
-        self.ax1.plot(live_x, self.live_prod, color='#39ff14', linewidth=2, label='Live')
+        self.ax1.plot(live_x, self.live_prod, color='#39ff14', linewidth=2, label='Random')
         self.ax1.legend(facecolor='#2b2b2b', labelcolor='white', fontsize='small')
         self.ax1.set_title("Production", color='white')
         self.ax1.set_xlabel(x_label, color='white')
@@ -678,9 +718,9 @@ class HUD_Dashboard(QMainWindow):
         self.ax2.clear()
         # Plot Baseline (Synchronized)
         if len(b_x) > 0:
-            self.ax2.plot(b_x, b_profit, color='gray', linestyle='--', alpha=0.6, label='Pretrained')
+            self.ax2.plot(b_x, b_profit, color='red', linestyle='-', alpha=0.6, label='Pretrained')
         # Plot Live
-        self.ax2.plot(live_x, self.live_profit, color='#ffd700', linewidth=2, label='Live')
+        self.ax2.plot(live_x, self.live_profit, color='#ffd700', linewidth=2, label='Random')
         self.ax2.legend(facecolor='#2b2b2b', labelcolor='white', fontsize='small')
         self.ax2.set_title("Profit", color='white')
         self.ax2.set_xlabel(x_label, color='white')
