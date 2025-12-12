@@ -125,7 +125,10 @@ class async_scheduling(object):
         com_truck_num = []
         for tmp_factory in self.factory.values():
             # Get the storage of material and product
-            material_storage = list(tmp_factory.material_num.values())
+            if tmp_factory.material_num is None:
+                material_storage = []
+            else:
+                material_storage = list(tmp_factory.material_num.values())
             product_storage = tmp_factory.product_num
             warehouse_storage += material_storage + [product_storage]
             # Get the number of truck at current factory
@@ -136,18 +139,17 @@ class async_scheduling(object):
         operable_trucks = [tmp_truck for tmp_truck in self.truck_agents if tmp_truck.operable_flag]
         for tmp_truck in operable_trucks:
             # Get the destination of all possiable route
-            distance = [value for key, value in tmp_truck.map_distance.items() if key.startswith(tmp_truck.position + '_to_')]
+            # distance = [value for key, value in tmp_truck.map_distance.items() if key.startswith(tmp_truck.position + '_to_')]
+            distance = [tmp_truck.map_distance[f'{tmp_truck.position}_to_Factory{i}'] for i in range(50)]
             # Current position
             position = int(tmp_truck.position[7:])
-            # Empty or not
-            weight = tmp_truck.weight
             # The transported product
             product = tmp_truck.get_truck_product()
             agent_id = int(tmp_truck.id.split('_')[1])
             if self.rul_state:
-                observation[agent_id] = np.concatenate([[tmp_truck.rul]]+[queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
+                observation[agent_id] = np.concatenate([[tmp_truck.rul]]+[queue_obs]+[distance]+[[position]]+[[product]])
             else:
-                observation[agent_id] = np.concatenate([queue_obs]+[distance]+[[position]]+[[weight]]+[[product]])
+                observation[agent_id] = np.concatenate([queue_obs]+[distance]+[[position]]+[[product]])
         return observation
     
     def _get_reward(self):

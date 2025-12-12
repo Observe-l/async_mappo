@@ -22,5 +22,6 @@ docker
 dataset
 data
 pretrained_models
+debug.ipynb
 
 onpolicy/scripts/gifs/

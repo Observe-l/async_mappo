@@ -49,7 +49,7 @@ def make_eval_env(all_args):
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str, default='rul_schedule', help="Which scenario to run on")
-    parser.add_argument('--project_name', type=str, default='RUL', help="wandb project name")
+    parser.add_argument('--project_name', type=str, default='async-RUL', help="wandb project name")
     parser.add_argument('--num_agents', type=int, default=12, help="number of trucks")
     parser.add_argument('--max_steps', type=int, default=800, help="Max step of each episode and max env step")
     parser.add_argument("--use_single_reward", action='store_true', default=False,
@@ -104,10 +104,10 @@ def parse_args(args, parser):
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
 
     # RUL prediction
-    parser.add_argument('--rul_state', default = False, action='store_true', help="Use RUL in state")
-    parser.add_argument('--use_rul_agent', default = False, action='store_true', help="Use agent to predict RUL")
+    parser.add_argument('--rul_state', default = True, action='store_true', help="Use RUL in state")
+    parser.add_argument('--use_rul_agent', default = True, action='store_true', help="Use agent to predict RUL")
     parser.add_argument('--rul_threshold', default = 7, type=float, help="RUL threshold, if 0, use RL to predict RUL")
-    parser.add_argument('--exp_type', type=str, default='rul', help="experiment name")
+    parser.add_argument('--exp_type', type=str, default='rul_threshold_7', help="experiment name")
 
     all_args = parser.parse_known_args(args)[0]
 

@@ -14,10 +14,9 @@ class Factory(object):
     def reset(self) -> None:
         self.total_final_product = 0
         self.product_num = 0
+        self.material_num = None
         if self.material[0] is not None:
             self.material_num = {m:0 for m in self.material}
-        else:
-            self.material_num = {self.product:0}
     
     def produce(self) -> None:
         if self.material[0] is not None:

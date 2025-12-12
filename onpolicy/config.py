@@ -203,10 +203,10 @@ def get_config():
                         help='Number of environment steps to train (default: 10e6)')
     parser.add_argument("--user_name", type=str, default='hitliuweihao',help="[for wandb usage], to specify user's name for simply collecting training data.")
     parser.add_argument("--wandb_name", type=str, default='hitliuweihao',help="[for wandb usage], to specify user's name for simply collecting training data.")
-    parser.add_argument("--use_wandb", action='store_false', default=False, help="[for wandb usage], by default True, will log date to wandb server. or else will use tensorboard to log data.")
+    parser.add_argument("--use_wandb", action='store_false', default=True, help="[for wandb usage], by default True, will log date to wandb server. or else will use tensorboard to log data.")
 
     # env parameters
-    parser.add_argument("--env_name", type=str, default='async_rul_schedule', help="specify the name of environment")
+    parser.add_argument("--env_name", type=str, default='async_schedule', help="specify the name of environment")
     parser.add_argument("--use_obs_instead_of_state", action='store_true',
                         default=False, help="Whether to use global state or concatenated obs")
 
@@ -248,8 +248,8 @@ def get_config():
     parser.add_argument("--use_naive_recurrent_policy", action='store_true',
                         default=False, help='Whether to use a naive recurrent policy')
     parser.add_argument("--use_recurrent_policy", action='store_true',
-                        default=False, help='use a recurrent policy')
-    parser.add_argument("--recurrent_N", type=int, default=1, help="The number of recurrent layers.")
+                        default=True, help='use a recurrent policy')
+    parser.add_argument("--recurrent_N", type=int, default=6, help="The number of recurrent layers.")
     parser.add_argument("--data_chunk_length", type=int, default=50,
                         help="Time length of chunks used to train a recurrent_policy")
     parser.add_argument("--use_influence_policy", action='store_true',
