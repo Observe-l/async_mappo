@@ -38,6 +38,7 @@ class Truck(object):
         self.load_time = 0
         # Record the reward
         self.cumulate_reward = 0.0
+        self.total_transported = 0.0
 
         # reset the driving distance
         self.driving_distance = 0.0
@@ -191,6 +192,10 @@ class Truck(object):
         self.product = None
         self.operable_flag = False
         self.last_transport += self.capacity
+        try:
+            self.total_transported += self.capacity
+        except Exception:
+            self.total_transported = self.capacity
 
     def get_truck_product(self) -> int:
         if self.product is None:

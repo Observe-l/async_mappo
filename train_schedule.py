@@ -103,6 +103,8 @@ def parse_args(args, parser):
     parser.add_argument('--astar_cost_mode', default = 'normal', choices = ['normal', 'utility'])
     parser.add_argument('--asynch', default=True, action='store_true', help="asynchronized execution")
 
+    parser.add_argument('--reset_buffer', default = False, action='store_true', help="Use RUL in state")
+
     # RUL prediction
     parser.add_argument('--rul_state', default = True, action='store_true', help="Use RUL in state")
     parser.add_argument('--use_rul_agent', default = True, action='store_true', help="Use agent to predict RUL")

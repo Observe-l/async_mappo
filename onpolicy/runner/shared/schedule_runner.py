@@ -100,7 +100,9 @@ class ScheduleRunner(Runner):
                 
 
     def warmup(self):
-        self.buffer.reset_buffer()
+        if self.all_args.reset_buffer:
+            self.buffer.reset_buffer()
+            print("Reset the buffer at the beginning of the episode")
         dict_obs = self.envs.reset() # shape = [num_envs, num_agents, obs_shape]
         # Store the obs for all agents 1 step to update the share_obs
         self.obs_buf = np.zeros((self.n_rollout_threads, self.num_agents, len(dict_obs[0][0])))
