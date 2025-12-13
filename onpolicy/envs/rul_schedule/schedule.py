@@ -7,8 +7,6 @@ from onpolicy.envs.rul_schedule.truck import Truck
 from onpolicy.envs.rul_schedule.factory import Factory, Producer
 from onpolicy.envs.rul_schedule.rul_gen import predictor
 import datetime
-import random
-import string
 
 class async_scheduling(object):
     def __init__(self, args):
@@ -41,10 +39,9 @@ class async_scheduling(object):
         self.share_observation_space = [Dict(share_obs_space) for _ in range(self.truck_num)]
                                             
         self.episode_num = 0
-        random_string = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
         # Create path with current date
         current_date = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-        self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/{args.exp_type}/async_mappo/{current_date}/exp_{random_string}"
+        self.path = f"/home/lwh/Documents/Code/RL-Scheduling/result/{args.exp_type}/async_mappo/{current_date}"
         Path(self.path).mkdir(parents=True, exist_ok=True)
         
     
