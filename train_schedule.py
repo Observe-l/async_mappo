@@ -191,7 +191,12 @@ def main(args):
     }
 
     # run experiments
-    from onpolicy.runner.shared.schedule_runner import ScheduleRunner as Runner
+    if all_args.share_policy:
+        from onpolicy.runner.shared.schedule_runner import ScheduleRunner as Runner
+        print("share policy")
+    else:
+        from onpolicy.runner.separated.schedule_runner import ScheduleRunner as Runner
+        print("separated policy")
 
     runner = Runner(config)
     runner.run()

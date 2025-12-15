@@ -102,7 +102,7 @@ class async_scheduling(object):
             if action == int(self.factory_num):
                 tmp_truck.maintain()
             else:
-                target_id = f"Factory{action}"
+                target_id = f"Factory{int(action)}"
                 # Invalid action
                 if target_id == tmp_truck.position:
                     self.invalid.append(agent_id)
