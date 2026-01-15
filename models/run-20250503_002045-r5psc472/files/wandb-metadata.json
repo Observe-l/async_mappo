@@ -1,0 +1,60 @@
+{
+  "os": "Linux-6.11.0-24-generic-x86_64-with-glibc2.39",
+  "python": "CPython 3.12.9",
+  "startedAt": "2025-05-02T16:20:45.208484Z",
+  "args": [
+    "--max_steps",
+    "800",
+    "--use_recurrent_policy",
+    "--recurrent_N",
+    "6",
+    "--exp_type",
+    "rul_threshold",
+    "--use_rul_agent",
+    "--experiment_name",
+    "threshold_7",
+    "--scenario_name",
+    "rul_schedule",
+    "--env_name",
+    "async_schedule",
+    "--project_name",
+    "async-RUL"
+  ],
+  "program": "/home/lwh/Documents/Code/async_mappo/train_schedule.py",
+  "codePath": "train_schedule.py",
+  "git": {
+    "remote": "git@github.com:Observe-l/async_mappo.git",
+    "commit": "09f320867143bfda1937a5e59b91449216c0bdec"
+  },
+  "email": "hitliuweihao@gmail.com",
+  "root": "/home/lwh/Documents/Code/results/async_schedule/rul_schedule/mappo/threshold_7",
+  "host": "cisco-server1",
+  "executable": "/home/lwh/.conda/envs/ray/bin/python3",
+  "codePathLocal": "train_schedule.py",
+  "cpu_count": 20,
+  "cpu_count_logical": 28,
+  "gpu": "NVIDIA GeForce RTX 4080 SUPER",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "2013991550976",
+      "used": "226111332352"
+    }
+  },
+  "memory": {
+    "total": "33471156224"
+  },
+  "cpu": {
+    "count": 20,
+    "countLogical": 28
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4080 SUPER",
+      "memoryTotal": "17171480576",
+      "cudaCores": 10240,
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "12.4"
+}

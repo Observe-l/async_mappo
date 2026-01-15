@@ -72,7 +72,7 @@ class async_scheduling(object):
         self.save_results(self.episode_len, step_length, action_dict, rewards)
 
         # Episode boundary
-        if self.episode_len >= 30 * 24 *3600:
+        if self.episode_len >= 7 * 24 *3600:
             self.done = np.array([True for _ in range(self.truck_num)])
 
         return obs, rewards, self.done, self.info

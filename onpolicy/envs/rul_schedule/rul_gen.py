@@ -24,7 +24,7 @@ tf.config.experimental.set_memory_growth(gpus[0], True)
 tf.config.experimental.set_memory_growth(gpus[0], True)
 
 # Limit the GPU memory usage to 50% of the total memory
-memory_limit = 1024*2  # 2GB GPU  in MB
+memory_limit = 1024*0.5  # 2GB GPU  in MB
 tf.config.experimental.set_virtual_device_configuration(
     gpus[0],
     [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit)]

@@ -1,0 +1,47 @@
+{
+  "feature_columns": [
+    "setting1",
+    "setting2",
+    "setting3",
+    "cycle_norm",
+    "s2",
+    "s3",
+    "s4",
+    "s7",
+    "s8",
+    "s9",
+    "s11",
+    "s12",
+    "s13",
+    "s14",
+    "s15",
+    "s17",
+    "s20",
+    "s21"
+  ],
+  "target_column": [
+    "RUL"
+  ],
+  "dataset": "FD001",
+  "seq_len": 50,
+  "rul_clip": 125.0,
+  "best_val_loss": 28.27113507572547,
+  "final_val": {
+    "rmse": 8.792477378210021,
+    "mae": 5.518979936573072
+  },
+  "final_test": {
+    "rmse": 13.213628453173698,
+    "mae": 9.159219721312164
+  },
+  "model_config": {
+    "input_dim": 18,
+    "seq_len": 50,
+    "d_model": 128,
+    "nhead": 8,
+    "num_layers": 4,
+    "dim_feedforward": 256,
+    "dropout": 0.1,
+    "pooling": "last"
+  }
+}
