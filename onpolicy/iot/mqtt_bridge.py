@@ -39,6 +39,11 @@ class BridgeConfig:
     devices: Tuple[str, ...] = ("edge-00", "edge-01", "edge-02", "edge-03")
     mode: str = "mqtt"  # "mqtt" or "mock"
 
+    # Optional broker authentication (disabled by default).
+    enable_auth: bool = False
+    username: str = "admin"
+    password: str = "mailstrup123456"
+
 
 class MqttBridge:
     def __init__(self, cfg: BridgeConfig):
@@ -60,7 +65,11 @@ class MqttBridge:
         c = mqtt.Client(client_id=f"env-bridge-{random.randrange(1,1_000_000)}", clean_session=True)
         c.on_connect = self._on_connect
         c.on_message = self._on_message
-        # No TLS/auth for LAN tests
+        if getattr(self.cfg, "enable_auth", False):
+            try:
+                c.username_pw_set(self.cfg.username, self.cfg.password)
+            except Exception:
+                pass
         c.connect(self.cfg.host, self.cfg.port, keepalive=self.cfg.keepalive)
         # Start loop in background thread
         c.loop_start()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 
-from onpolicy.envs.rul_schedule.schedule import async_scheduling
+from onpolicy.envs.transformer_schedule.schedule import async_scheduling
 
 
 def _build_fixed_policy_maps(num_agents: int):
@@ -79,7 +79,7 @@ class FixedPolicy:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exp_type', type=str, default='fixed_schedule', help="Which scenario to run on")
+    parser.add_argument('--exp_type', type=str, default='fixed_schedule_wo_rul', help="Which scenario to run on")
     parser.add_argument('--num_agents', type=int, default=12, help="number of trucks")
     parser.add_argument('--use_rul_agent', default=True, action='store_true', help="Use agent to predict RUL")
     parser.add_argument('--rul_threshold', default=7, type=int, help="RUL threshold")

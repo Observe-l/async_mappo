@@ -798,6 +798,9 @@ def main():
     p.add_argument('--mqtt-port', type=int, default=1883)
     p.add_argument('--mqtt-devices', default='edge-00,edge-01,edge-02,edge-03')
     p.add_argument('--mqtt-timeout-ms', type=int, default=1000)
+    p.add_argument('--mqtt-auth', action='store_true', default=False, help='Enable MQTT username/password auth')
+    p.add_argument('--mqtt-username', default='admin')
+    p.add_argument('--mqtt-password', default='mailstrup123456')
     # MySQL logging options
     p.add_argument('--mysql-enable', action='store_true', help='Enable MySQL logging')
     p.add_argument('--mysql-host', default='127.0.0.1')
@@ -811,8 +814,16 @@ def main():
                        rul_threshold=args.rul_threshold, rul_state=args.rul_state,
                        use_gui=(args.mode=='gui'))
     devices = tuple([d.strip() for d in args.mqtt_devices.split(',') if d.strip()])
-    bridge_cfg = BridgeConfig(host=args.mqtt_host, port=args.mqtt_port, timeout_ms=args.mqtt_timeout_ms,
-                              devices=devices, mode='mqtt')
+    bridge_cfg = BridgeConfig(
+        host=args.mqtt_host,
+        port=args.mqtt_port,
+        timeout_ms=args.mqtt_timeout_ms,
+        devices=devices,
+        mode='mqtt',
+        enable_auth=bool(args.mqtt_auth),
+        username=str(args.mqtt_username),
+        password=str(args.mqtt_password),
+    )
     if args.mysql_enable and MySQLRunLogger is None:
         print(f"[DB] mysql logging requested but import failed: {_MYSQL_IMPORT_ERR}")
     mysql_cfg = {

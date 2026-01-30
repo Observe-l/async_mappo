@@ -78,13 +78,13 @@ class async_scheduling(object):
             for tmp_truck in self.truck_agents:
                 if tmp_truck.operable_flag:
                     tmp_truck.rul = self.predictor.predict(tmp_truck.eng_obs)
-                    if self.use_rul_agent and tmp_truck.rul < self.rul_threshold:
-                        tmp_truck.maintain()
-                        # Record when make maintain
-                        maintain_dict = {int(tmp_truck.id.split('_')[1]): self.factory_num}
-                        self.record_debug(self.episode_len, maintain_dict)
-                    else:
-                        sumo_flag = False
+                    # if self.use_rul_agent and tmp_truck.rul < self.rul_threshold:
+                    #     tmp_truck.maintain()
+                    #     # Record when make maintain
+                    #     maintain_dict = {int(tmp_truck.id.split('_')[1]): self.factory_num}
+                    #     self.record_debug(self.episode_len, maintain_dict)
+                    # else:
+                    sumo_flag = False
         
         # Get observation, reward. record the result
         obs = self._get_obs()

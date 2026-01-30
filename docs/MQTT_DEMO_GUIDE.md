@@ -45,6 +45,7 @@ Open four terminals and run one client per device. Replace `ACTOR_DIR` with your
 ```bash
 # Terminal 1
 python3 scripts/iot/edge_client.py --device-id edge-00 --host 192.168.1.204 --fresh-actor
+python3 scripts/iot/edge_client.py --device-id edge-00 --host 34.124.196.18 --fresh-actor
 
 # Terminal 2
 python3 scripts/iot/edge_client.py --device-id edge-01 --host 192.168.1.204 --fresh-actor
@@ -71,6 +72,10 @@ python3 scripts/render/run_demo_schedule_mqtt.py --mode gui --mysql-enable\
   --num-agents 4 --max-steps 2000
   
 ```
+
+If your broker requires authentication, add:
+
+`--mqtt-auth --mqtt-username admin --mqtt-password mailstrup123456`
 
 Debug (headless) mode:
 

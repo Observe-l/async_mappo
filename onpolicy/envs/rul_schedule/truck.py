@@ -1,5 +1,6 @@
 import numpy as np
 import random
+from pathlib import Path
 
 class Truck(object):
     def __init__(self, truck_id:str = 'truck_0', capacity:float = 5.0, weight:float = 0.0,\
@@ -54,7 +55,9 @@ class Truck(object):
 
         # Random select an engineer ID
         self.eng_id = random.randint(1, 100)
-        self.eng_state = np.load(f"/home/lwh/Documents/Code/RL-Scheduling/util/cisco_engine_data/engine_{self.eng_id}.npz")['arr_0']
+        repo_root = Path(__file__).resolve().parents[3]
+        engine_path = repo_root / 'models' / 'cisco_engine_data' / f'engine_{self.eng_id}.npz'
+        self.eng_state = np.load(str(engine_path))['arr_0']
         self.eng_len = self.eng_state.shape[0]
         self.rul = 125
         # The engine state is a time series data, so we need to set the slide window
@@ -92,7 +95,9 @@ class Truck(object):
 
         # Random select an engineer ID
         self.eng_id = random.randint(1, 100)
-        self.eng_state = np.load(f"/home/lwh/Documents/Code/RL-Scheduling/util/cisco_engine_data/engine_{self.eng_id}.npz")['arr_0']
+        repo_root = Path(__file__).resolve().parents[3]
+        engine_path = repo_root / 'models' / 'cisco_engine_data' / f'engine_{self.eng_id}.npz'
+        self.eng_state = np.load(str(engine_path))['arr_0']
         self.eng_len = self.eng_state.shape[0]
         self.rul = 125
         # The engine state is a time series data, so we need to set the slide window

@@ -7,6 +7,7 @@ from tensorflow import keras
 from tensorflow import reshape
 import warnings
 import pickle
+from pathlib import Path
 import os
 import time
 from typing import Optional
@@ -20,21 +21,20 @@ import random
 import pickle
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
-tf.config.experimental.set_memory_growth(gpus[0], True)
-tf.config.experimental.set_memory_growth(gpus[0], True)
-
-# Limit the GPU memory usage to 50% of the total memory
-memory_limit = 1024*0.5  # 2GB GPU  in MB
-tf.config.experimental.set_virtual_device_configuration(
-    gpus[0],
-    [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=memory_limit)]
-)
-print("GPU memory configuration set successfully.")
+if gpus:
+    try:
+        tf.config.experimental.set_memory_growth(gpus[0], True)
+        # Optionally cap memory if desired; keep safe defaults across devices.
+        # If this fails (e.g., driver restrictions), continue without hard limits.
+    except Exception:
+        pass
 
 # GCPATr Definition and Helper funtions
 
-with open('/home/lwh/Documents/Code/RL-Scheduling/util/model/CMAPSS_data_dictionary.pkl', 'rb') as f:
-   data_dictionary = pickle.load(f)
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_DATA_DICT = _REPO_ROOT / 'models' / 'model' / 'CMAPSS_data_dictionary.pkl'
+with open(str(_DEFAULT_DATA_DICT), 'rb') as f:
+    data_dictionary = pickle.load(f)
 
 cov_adj_mat = data_dictionary['FD001']['Cov_mat']
 
@@ -407,8 +407,9 @@ class rul_prediction():
 
 class predictor():
     # Load the model from the file
-    def __init__(self, lookback_window=40):
-        model_path='/home/lwh/Documents/Code/RL-Scheduling/util/model/'
+    def __init__(self, lookback_window=40, model_path: Optional[str] = None):
+        if model_path is None:
+            model_path = str(_REPO_ROOT / 'models' / 'model')
         self.lw = lookback_window
         custom_objects={"GCPATr": GCPATr,
                         "PositionEmbeddingLayer": PositionEmbeddingLayer,

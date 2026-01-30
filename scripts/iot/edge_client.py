@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import time
 from pathlib import Path
@@ -21,7 +22,7 @@ import sys
 try:
     from gymnasium.spaces import Discrete, Box, Dict
 except Exception:
-    from gym.spaces import Discrete, Box, Dict
+    from gym.spaces import Discrete, Box, Dict  # type: ignore
 from typing import Optional
 import numpy as np
 
@@ -39,16 +40,74 @@ except Exception as e:
     print("paho-mqtt is required: pip install paho-mqtt")
     raise
 
-try:
-    import torch  # type: ignore
-except Exception:
-    torch = None
+torch = None
 
-# Optional TensorFlow RUL predictor (fallback when TorchScript RUL model not provided)
-try:
-    from onpolicy.envs.rul_schedule.rul_gen import predictor as RulPredictor  # type: ignore
-except Exception:
-    RulPredictor = None
+
+def _torch_ready() -> bool:
+    return torch is not None
+
+
+def _try_import_torch(device_id: str = '?'):
+    """Import torch lazily.
+
+    Importing torch can be slow; do it only when we need actor training/inference.
+    """
+    global torch
+    if torch is not None:
+        return torch
+    try:
+        import torch as _torch  # type: ignore
+
+        torch = _torch
+        try:
+            print(f"[CLIENT {device_id}] torch imported", flush=True)
+        except Exception:
+            pass
+        return torch
+    except Exception as e:
+        try:
+            print(f"[CLIENT {device_id}] torch import failed: {e}", flush=True)
+        except Exception:
+            pass
+        torch = None
+        return None
+
+
+def _try_init_tf_rul_predictor(device_id: str, tf_model_dir: str = ''):
+    """Lazy TF import/initialization.
+
+    Importing TensorFlow can be slow; do it only when we actually need the predictor.
+    """
+    # Reduce TensorFlow's verbose C++/GPU logs unless the user explicitly overrides it.
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    try:
+        from onpolicy.envs.rul_schedule.rul_gen import predictor as RulPredictor  # type: ignore
+    except Exception as e:
+        try:
+            print(f"[CLIENT {device_id}] TF RUL predictor unavailable (import failed): {e}", flush=True)
+        except Exception:
+            pass
+        return None
+
+    try:
+        if tf_model_dir:
+            pred = RulPredictor(model_path=tf_model_dir)
+        else:
+            pred = RulPredictor()
+        try:
+            print(
+                f"[CLIENT {device_id}] loaded TF RUL predictor (lookback={getattr(pred, 'lw', '?')})",
+                flush=True,
+            )
+        except Exception:
+            pass
+        return pred
+    except Exception as e:
+        try:
+            print(f"[CLIENT {device_id}] failed to init TF RUL predictor: {e}", flush=True)
+        except Exception:
+            pass
+        return None
 
 class TrainedPolicy:
     """Wraps the official R_MAPPO actor architecture and loads its state dict.
@@ -57,12 +116,13 @@ class TrainedPolicy:
     """
     def __init__(self, actor_dir: Optional[str], env_obs_space, env_share_obs_space, env_act_space,
                  use_recurrent_policy: bool = True, recurrent_N: int = 6):
-        self.device = torch.device("cpu") if torch else None
+        _t = _try_import_torch()
+        self.device = _t.device("cpu") if _t else None
         self.valid = False
         self._loaded_from = None
         self.actor = None  # Will become R_Actor instance
         self.args = None
-        if torch is None:
+        if _try_import_torch() is None:
             print("Torch not available; using random actions.")
             return
         try:
@@ -101,7 +161,7 @@ class TrainedPolicy:
             self.actor = None
 
     def act(self, obs_vec: np.ndarray) -> int:
-        if self.actor is None or torch is None:
+        if self.actor is None or _try_import_torch() is None:
             return random.randrange(self._action_dim())
         try:
             obs_tensor = torch.as_tensor(obs_vec, dtype=torch.float32).unsqueeze(0)
@@ -124,10 +184,29 @@ class TrainedPolicy:
         except Exception:
             return 1
 
+    def log_prob(self, obs_batch: np.ndarray, action_batch: np.ndarray) -> Optional[np.ndarray]:
+        """Compute log-probabilities for given actions under current actor.
+
+        Returns shape (B,) numpy array, or None on failure.
+        """
+        if self.actor is None or _try_import_torch() is None:
+            return None
+        try:
+            obs_tensor = torch.as_tensor(obs_batch, dtype=torch.float32)
+            act_tensor = torch.as_tensor(action_batch, dtype=torch.int64).reshape(-1, 1)
+            B = int(obs_tensor.shape[0])
+            rnn_states = torch.zeros((B, self.args.recurrent_N, self.args.hidden_size), dtype=torch.float32)
+            masks = torch.ones((B, 1), dtype=torch.float32)
+            with torch.no_grad():
+                logp, _ent, _v = self.actor.evaluate_actions(obs_tensor, rnn_states, act_tensor, masks)
+            return logp.view(-1).detach().cpu().numpy()
+        except Exception:
+            return None
+
 def load_torchscript_model(path: str):
     if not path:
         return None
-    if torch is None:
+    if _try_import_torch() is None:
         print("Torch not available; running dummy inference.")
         return None
     p = Path(path)
@@ -147,25 +226,43 @@ def load_torchscript_model(path: str):
 
 
 class EdgeClient:
-    def __init__(self, device_id: str, host: str, port: int, rul_model: str = '', actor_model: str = '', actor_dir: str = '', fresh_actor: bool = False):
-        print(f"[CLIENT {device_id}] init starting host={host} port={port} fresh_actor={fresh_actor}", flush=True)
+    def __init__(self, device_id: str, host: str, port: int, rul_model: str = '', actor_model: str = '', actor_dir: str = '', fresh_actor: bool = False,
+                 topic_prefix: str = 'demo', tf_model_dir: str = '',
+                 mqtt_auth: bool = False, mqtt_username: str = 'admin', mqtt_password: str = 'mailstrup123456'):
+        print(f"[CLIENT {device_id}] init starting host={host} port={port} prefix={topic_prefix} fresh_actor={fresh_actor} mqtt_auth={mqtt_auth}", flush=True)
         self.device_id = device_id
         self.host = host
         self.port = port
+        self.topic_prefix = (topic_prefix or 'demo').strip('/')
         self.gcpatr = load_torchscript_model(rul_model)
         self.actor = load_torchscript_model(actor_model)
         self.actor_dir = actor_dir
-        self._actor_built = False
         self._expected_obs_dim = None  # Will be set when actor dims are known
+
+        # Case-1 distributed training: one actor per agent_id (separated policy).
+        # We store TrainedPolicy instances keyed by agent string (e.g., 'truck_0').
+        self.actors = {}  # type: ignore[var-annotated]
+        self.optimizers = {}  # type: ignore[var-annotated]
         # Instantiate TF predictor if TorchScript RUL model not supplied
         self.rul_predictor = None
-        if self.gcpatr is None and RulPredictor is not None:
-            try:
-                self.rul_predictor = RulPredictor()
-                print(f"[CLIENT {self.device_id}] loaded TF RUL predictor (lookback={getattr(self.rul_predictor,'lw','?')})")
-            except Exception as e:
-                print(f"[CLIENT {self.device_id}] failed to init TF RUL predictor: {e}")
+        # Only initialize TF predictor when an explicit model dir is provided.
+        # Passing tf_model_dir="" disables TF (useful for lightweight smoke tests).
+        if self.gcpatr is None and tf_model_dir:
+            self.rul_predictor = _try_init_tf_rul_predictor(device_id=self.device_id, tf_model_dir=tf_model_dir)
+
+        # Keep a per-agent history of sensor feature vectors for TF predictor.
+        # Local predictor expects a list of length >= lookback_window, where each element is a 2D array.
+        self._rul_hist = {}  # type: ignore[var-annotated]
+        try:
+            self._rul_lw = int(getattr(self.rul_predictor, 'lw', 40)) if self.rul_predictor is not None else 40
+        except Exception:
+            self._rul_lw = 40
         self.client = mqtt.Client(client_id=f"edge-{device_id}-{random.randrange(1,1_000_000)}", clean_session=True)
+        if mqtt_auth:
+            try:
+                self.client.username_pw_set(mqtt_username, mqtt_password)
+            except Exception:
+                pass
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         # Training state
@@ -179,27 +276,11 @@ class EdgeClient:
         self._lambda = 0.95
         self._clip = 0.2
         self._entropy_coef = 0.01
+        # Legacy per-step buffer kept for backward compatibility; case-1 uses train_batch.
         self._batch_buffer = {  # per agent temporary storage
             'obs': {}, 'actions': {}, 'rewards': {}, 'values': {}, 'dones': {}, 'next_values': {}
         }
         self._last_action_dim = 0
-
-        # Immediate attempt to build pretrained RL actor BEFORE connecting (ensures startup log appears first)
-        if not self.fresh_actor and self.actor is None and self.actor_dir:
-            try:
-                inferred_obs, inferred_act = self._infer_actor_dims(self.actor_dir)
-                obs_space = Dict({"global_obs": Box(low=-1, high=30000, shape=(inferred_obs,))})
-                act_space = Discrete(inferred_act)
-                self.actor = TrainedPolicy(actor_dir=self.actor_dir,
-                                    env_obs_space=obs_space,
-                                    env_share_obs_space=obs_space,
-                                    env_act_space=act_space,
-                                    use_recurrent_policy=True,
-                                    recurrent_N=6)
-                self._actor_built = True
-                self._expected_obs_dim = int(inferred_obs)
-            except Exception as e:
-                print(f"[CLIENT {self.device_id}] initial actor load failed: {e}")
 
         # Connect to broker after local init
         try:
@@ -209,18 +290,25 @@ class EdgeClient:
             print(f"[CLIENT {self.device_id}] connect failed: {e}", flush=True)
 
     def start(self):
+        # Warm up torch import in the background so MQTT callbacks stay responsive.
+        try:
+            import threading
+
+            threading.Thread(target=_try_import_torch, args=(self.device_id,), daemon=True).start()
+        except Exception:
+            pass
         print(f"[CLIENT {self.device_id}] entering loop", flush=True)
         self.client.loop_forever()
 
     def on_connect(self, client, userdata, flags, rc):
-        topic_obs = f"demo/obs/{self.device_id}"
-        topic_train = f"demo/train/{self.device_id}"
+        topic_obs = f"{self.topic_prefix}/obs/{self.device_id}"
+        topic_train = f"{self.topic_prefix}/train/{self.device_id}"
         client.subscribe(topic_obs, qos=1)
         client.subscribe(topic_train, qos=1)
-        print(f"[CLIENT {self.device_id}] connected rc={rc}, subscribed {topic_obs} & {topic_train}")
+        print(f"[CLIENT {self.device_id}] connected rc={rc}, subscribed {topic_obs} & {topic_train}", flush=True)
 
     def on_message(self, client, userdata, msg):
-        is_train = msg.topic.startswith("demo/train/")
+        is_train = msg.topic.startswith(f"{self.topic_prefix}/train/")
         try:
             payload = json.loads(msg.payload.decode('utf-8'))
         except Exception:
@@ -239,9 +327,11 @@ class EdgeClient:
         pickup_candidates = meta.get('pickup_candidates') or None
         try:
             if decision_type == 'pickup':
-                print(f"[CLIENT {self.device_id}] recv PICKUP step={step_id} agent={agent_id} seq={seq} candidates={len(pickup_candidates) if pickup_candidates else 'NA'}")
+                print(f"[CLIENT {self.device_id}] recv PICKUP step={step_id} agent={agent_id} seq={seq} candidates={len(pickup_candidates) if pickup_candidates else 'NA'}", flush=True)
+            elif decision_type == 'rul':
+                print(f"[CLIENT {self.device_id}] recv RUL step={step_id} agent={agent_id} seq={seq}", flush=True)
             else:
-                print(f"[CLIENT {self.device_id}] recv RL step={step_id} agent={agent_id} seq={seq} action_dim={action_dim}")
+                print(f"[CLIENT {self.device_id}] recv RL step={step_id} agent={agent_id} seq={seq} action_dim={action_dim}", flush=True)
             if action_dim > 0:
                 self._last_action_dim = action_dim
         except Exception:
@@ -249,13 +339,39 @@ class EdgeClient:
 
         # Inference timings (simple)
         t0 = time.time()
-        rul = self.infer_rul(sensor_vec)
+        # Update per-agent RUL history only when server sends a single frame.
+        # If server sends the full eng_obs history (list of frames), we use it directly in infer_rul.
+        try:
+            if agent_id is not None and isinstance(sensor_vec, list) and len(sensor_vec) > 0:
+                akey = str(agent_id)
+                # Heuristic: full history usually arrives as list-of-frames.
+                # - frame is list[float] (1D) or list[list[float]] (2D)
+                # - history is list[frame]
+                is_frame_2d = isinstance(sensor_vec[0], list) and len(sensor_vec[0]) > 0 and isinstance(sensor_vec[0][0], (list, tuple))
+                is_history = isinstance(sensor_vec[0], list) and (is_frame_2d or (len(sensor_vec) > 1 and isinstance(sensor_vec[0][0], (int, float))))
+                if not is_history:
+                    hist = self._rul_hist.get(akey)
+                    if hist is None:
+                        hist = []
+                        self._rul_hist[akey] = hist
+                    obs_arr = np.asarray(sensor_vec, dtype=np.float32).reshape(1, -1)
+                    hist.append(obs_arr)
+                    if len(hist) > int(self._rul_lw):
+                        del hist[:-int(self._rul_lw)]
+        except Exception:
+            pass
+
+        rul = self.infer_rul(str(agent_id) if agent_id is not None else '', sensor_vec)
         t1 = time.time()
         if decision_type == 'pickup':
             action = self._infer_pickup(pickup_candidates, action_dim)
             log_prob = None
+        elif decision_type == 'rul':
+            # RUL-only request: do not run the RL actor.
+            action = None
+            log_prob = None
         else:
-            action, log_prob = self.infer_action(env_vec, rul, action_dim)
+            action, log_prob = self.infer_action(str(agent_id), env_vec, rul, action_dim)
         t2 = time.time()
 
         reply = {
@@ -263,18 +379,20 @@ class EdgeClient:
             'agent_id': agent_id,
             'seq': seq,
             'rul': float(rul),
-            'action': int(action),
+            'action': int(action) if action is not None else None,
             'log_prob': float(log_prob) if log_prob is not None else None,
             'inference_ms': float((t2 - t0) * 1000.0),
             'device_id': self.device_id,
             'decision_type': decision_type,
         }
-        client.publish(f"demo/act/{self.device_id}", json.dumps(reply), qos=1, retain=False)
+        client.publish(f"{self.topic_prefix}/act/{self.device_id}", json.dumps(reply), qos=1, retain=False)
         try:
             if decision_type == 'pickup':
-                print(f"[CLIENT {self.device_id}] send PICKUP step={step_id} agent={agent_id} seq={seq} action={int(action)} -> pick up goods at Factory{int(action)} rul={float(rul):.2f}")
+                print(f"[CLIENT {self.device_id}] send PICKUP step={step_id} agent={agent_id} seq={seq} action={int(action)} -> pick up goods at Factory{int(action)} rul={float(rul):.2f}", flush=True)
+            elif decision_type == 'rul':
+                print(f"[CLIENT {self.device_id}] send RUL step={step_id} agent={agent_id} seq={seq} rul={float(rul):.2f}", flush=True)
             else:
-                print(f"[CLIENT {self.device_id}] send RL step={step_id} agent={agent_id} seq={seq} action={int(action)} -> delivery goods to Factory{int(action)} rul={float(rul):.2f}")
+                print(f"[CLIENT {self.device_id}] send RL step={step_id} agent={agent_id} seq={seq} action={int(action)} -> delivery goods to Factory{int(action)} rul={float(rul):.2f}", flush=True)
         except Exception:
             pass
 
@@ -287,50 +405,147 @@ class EdgeClient:
                 print(f"[CLIENT {self.device_id}] optimizer init failed: {e}")
 
     def _handle_train(self, payload: dict):
-        if not self.enable_training or torch is None:
+        if not self.enable_training or not _torch_ready():
             return
-        # Fresh actor flag control: if payload indicates fresh training start
-        msg_type = payload.get('type','train')
+
+        msg_type = payload.get('type', 'train_batch')
         if msg_type == 'config':
             self.fresh_actor = bool(payload.get('fresh_actor', False))
             return
-        if msg_type == 'train':
-            # Step transition accumulation
-            agent_id = payload.get('agent_id')
-            if agent_id is None:
-                return
-            try:
-                obs = payload.get('obs', [])
-                action = int(payload.get('action'))
-                reward = float(payload.get('reward'))
-                done = bool(payload.get('done'))
-                value = float(payload.get('value', 0.0))
-                next_value = float(payload.get('next_value', 0.0))
-            except Exception:
-                return
-            b = self._batch_buffer
-            for key,data in [('obs',obs),('actions',action),('rewards',reward),('values',value),('dones',done),('next_values',next_value)]:
-                arr = b[key].setdefault(agent_id, [])
-                arr.append(data)
-            # Build actor lazily if fresh and not built yet
-            if self.actor is None or (isinstance(self.actor, TrainedPolicy) and self.actor.actor is None):
-                inferred_action_dim = int(payload.get('action_dim') or self._last_action_dim or 0)
-                self._lazy_build_actor(len(obs), inferred_action_dim)
-            horizon_reached = len(b['obs'][agent_id]) >= self._horizon or done
-            if not horizon_reached:
-                return
-            self._init_optimizer_if_needed()
-            self._update_actor_batch(agent_id)
-            # reset buffers for agent
-            for key in b.keys():
-                b[key][agent_id] = []
-            return
-        if msg_type == 'train_batch':
-            # Future extension for server-sent batch updates
+
+        # Case-1 protocol: server sends episode-end batches with advantages.
+        if msg_type != 'train_batch':
             return
 
+        agent_id = payload.get('agent_id')
+        if not agent_id:
+            return
+        try:
+            obs_seq = payload.get('obs', [])
+            actions_seq = payload.get('actions', [])
+            old_logp_seq = payload.get('old_log_probs', [])
+            adv_seq = payload.get('advantages', [])
+            action_dim = int(payload.get('action_dim') or self._last_action_dim or 0)
+        except Exception:
+            return
+
+        if not isinstance(obs_seq, list) or len(obs_seq) == 0:
+            return
+
+        # Build actor for this agent if needed.
+        try:
+            obs_len = int(len(obs_seq[0]))
+        except Exception:
+            return
+        self._ensure_actor(agent_id=str(agent_id), obs_len=obs_len, action_dim=action_dim)
+        self._ensure_optimizer(agent_id=str(agent_id))
+
+        self._update_actor_from_advantages(
+            agent_id=str(agent_id),
+            obs_seq=obs_seq,
+            actions_seq=actions_seq,
+            old_logp_seq=old_logp_seq,
+            adv_seq=adv_seq,
+        )
+        return
+
+    def _ensure_actor(self, agent_id: str, obs_len: int, action_dim: int):
+        if not _torch_ready():
+            return
+        if agent_id in self.actors and self.actors[agent_id].actor is not None:
+            return
+        if obs_len <= 0 or action_dim <= 0:
+            return
+        try:
+            obs_space = Dict({"global_obs": Box(low=-1, high=30000, shape=(obs_len,))})
+            act_space = Discrete(int(action_dim))
+            # Fresh per-agent actor by default (unless you later add per-agent checkpoint loading).
+            self.actors[agent_id] = TrainedPolicy(
+                actor_dir=None,
+                env_obs_space=obs_space,
+                env_share_obs_space=obs_space,
+                env_act_space=act_space,
+                use_recurrent_policy=True,
+                recurrent_N=6,
+            )
+            print(f"[CLIENT {self.device_id}] actor init agent={agent_id} obs_dim={obs_len} action_dim={action_dim}", flush=True)
+        except Exception as e:
+            print(f"[CLIENT {self.device_id}] actor init failed agent={agent_id}: {e}", flush=True)
+
+    def _ensure_optimizer(self, agent_id: str):
+        if not _torch_ready():
+            return
+        if agent_id in self.optimizers:
+            return
+        pol = self.actors.get(agent_id)
+        if pol is None or pol.actor is None:
+            return
+        try:
+            self.optimizers[agent_id] = torch.optim.Adam(pol.actor.parameters(), lr=1e-4)
+            print(f"[CLIENT {self.device_id}] optimizer init agent={agent_id}", flush=True)
+        except Exception as e:
+            print(f"[CLIENT {self.device_id}] optimizer init failed agent={agent_id}: {e}", flush=True)
+
+    def _update_actor_from_advantages(self, agent_id: str, obs_seq: list, actions_seq: list, old_logp_seq: list, adv_seq: list):
+        if not _torch_ready():
+            return
+        pol = self.actors.get(agent_id)
+        opt = self.optimizers.get(agent_id)
+        if pol is None or pol.actor is None or opt is None:
+            return
+        try:
+            obs = torch.as_tensor(np.asarray(obs_seq, dtype=np.float32), dtype=torch.float32)
+            actions = torch.as_tensor(np.asarray(actions_seq, dtype=np.int64), dtype=torch.int64).reshape(-1, 1)
+            old_logp = torch.as_tensor(np.asarray(old_logp_seq, dtype=np.float32), dtype=torch.float32).view(-1)
+            adv = torch.as_tensor(np.asarray(adv_seq, dtype=np.float32), dtype=torch.float32).view(-1)
+        except Exception:
+            return
+
+        if obs.shape[0] == 0 or obs.shape[0] != actions.shape[0] or obs.shape[0] != adv.shape[0]:
+            return
+
+        # Normalize advantages for stability (avoid NaNs for tiny batches).
+        if adv.numel() >= 2:
+            std = adv.std()
+            if float(std.item()) > 1e-8:
+                adv = (adv - adv.mean()) / (std + 1e-8)
+            else:
+                adv = adv - adv.mean()
+        else:
+            adv = adv - adv.mean()
+
+        B = int(obs.shape[0])
+        rnn_states = torch.zeros((B, pol.args.recurrent_N, pol.args.hidden_size), dtype=torch.float32)
+        masks = torch.ones((B, 1), dtype=torch.float32)
+
+        # Compute new log_probs under current policy.
+        logp_new, entropy, _v = pol.actor.evaluate_actions(obs, rnn_states, actions, masks)
+        logp_new = logp_new.view(-1)
+
+        ratio = torch.exp(logp_new - old_logp)
+        surr1 = ratio * adv
+        surr2 = torch.clamp(ratio, 1.0 - self._clip, 1.0 + self._clip) * adv
+        loss_pg = -torch.min(surr1, surr2).mean()
+        loss_ent = -self._entropy_coef * entropy.mean()
+        loss = loss_pg + loss_ent
+
+        opt.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(pol.actor.parameters(), 5.0)
+        opt.step()
+
+        self.train_steps += 1
+        try:
+            print(
+                f"[CLIENT {self.device_id}] actor_update#{self.train_steps} agent={agent_id} batch={B} "
+                f"loss={float(loss.item()):.4f} pg={float(loss_pg.item()):.4f} ent={float(entropy.mean().item()):.4f}",
+                flush=True,
+            )
+        except Exception:
+            pass
+
     def _lazy_build_actor(self, obs_len: int, action_dim: int):
-        if torch is None or obs_len <= 0 or action_dim <= 0:
+        if not _torch_ready() or obs_len <= 0 or action_dim <= 0:
             return
         try:
             from onpolicy.config import get_config
@@ -355,7 +570,7 @@ class EdgeClient:
             print(f"[CLIENT {self.device_id}] fresh actor init failed: {e}")
 
     def _update_actor_batch(self, agent_id: str):
-        if torch is None or not isinstance(self.actor, TrainedPolicy) or self.actor.actor is None or self._optimizer is None:
+        if not _torch_ready() or not isinstance(self.actor, TrainedPolicy) or self.actor.actor is None or self._optimizer is None:
             return
         b = self._batch_buffer
         obs_seq = b['obs'][agent_id]
@@ -408,7 +623,7 @@ class EdgeClient:
         self.train_steps += 1
         print(f"[CLIENT {self.device_id}] actor batch update #{self.train_steps} steps={T} loss={loss_total.item():.4f} pg={loss_pg.item():.4f} ent={entropy.item():.4f}")
 
-    def infer_rul(self, sensor_vec):
+    def infer_rul(self, agent_id: str, sensor_vec):
         # TorchScript model path provided
         if self.gcpatr is not None:
             try:
@@ -416,29 +631,79 @@ class EdgeClient:
                 x = torch.tensor(sensor_vec, dtype=torch.float32).unsqueeze(0)
                 with torch.no_grad():
                     y = self.gcpatr(x)
-                return float(y.view(-1)[0].item())
+                v = float(y.view(-1)[0].item())
+                return float(np.clip(v, 0.0, 125.0))
             except Exception:
                 pass
-        # Fallback to TF predictor if available and sensor_vec is a sequence of engine observations
+        # Fallback to TF predictor if available.
         if self.rul_predictor is not None:
             try:
-                return float(self.rul_predictor.predict(sensor_vec))
+                # TF predictor expects a list of length >= lookback_window,
+                # where each element is a (1, F) array (matches Truck.eng_obs in the env).
+                hist = None
+
+                # If server sent a full history, normalize and use it directly.
+                if isinstance(sensor_vec, list) and len(sensor_vec) > 0 and isinstance(sensor_vec[0], list):
+                    # Case A: history of 2D frames: [[[...]], [[...]], ...]
+                    if len(sensor_vec[0]) > 0 and isinstance(sensor_vec[0][0], (list, tuple)):
+                        hist = [np.asarray(frame, dtype=np.float32) for frame in sensor_vec]
+                    # Case B: history of 1D frames: [[...], [...], ...]
+                    elif len(sensor_vec) > 1 and isinstance(sensor_vec[0][0], (int, float)):
+                        hist = [np.asarray(frame, dtype=np.float32).reshape(1, -1) for frame in sensor_vec]
+                    # Case C: single 2D frame: [[...]]
+                    elif len(sensor_vec) > 0 and isinstance(sensor_vec[0][0], (int, float)):
+                        hist = [np.asarray(sensor_vec, dtype=np.float32).reshape(1, -1)]
+
+                # Otherwise, fall back to local rolling history for this agent.
+                if hist is None and agent_id:
+                    hist = self._rul_hist.get(str(agent_id))
+
+                if hist is None:
+                    return 125.0
+
+                v = float(self.rul_predictor.predict(hist))
+                return float(np.clip(v, 0.0, 125.0))
             except Exception:
                 pass
-        # Final random fallback
-        return 500.0 + random.random() * 100.0
+        # Match local-training default when predictor not ready/available.
+        return 125.0
 
-    def infer_action(self, env_vec, rul, action_dim: int = 0):
-        # Always use [RUL] + env vector (obs_dim = 243)
+    def infer_action(self, agent_id: str, env_vec, rul, action_dim: int = 0):
+        if not _torch_ready():
+            if action_dim and action_dim > 0:
+                return random.randrange(0, int(action_dim)), None
+            return random.randrange(0, 5), None
+
+        # Always use [RUL] + env vector
         combined = [float(rul)] + list(env_vec)
-        if self.actor is not None:
+        self._expected_obs_dim = len(combined)
+
+        # Lazily build per-agent actor for inference/training.
+        try:
+            if action_dim and int(action_dim) > 0:
+                self._ensure_actor(agent_id=str(agent_id), obs_len=int(len(combined)), action_dim=int(action_dim))
+        except Exception:
+            pass
+
+        # Prefer per-agent trained actor (case-1).
+        pol = self.actors.get(str(agent_id))
+        if pol is not None and pol.actor is not None:
             try:
-                act = int(self.actor.act(combined))
-                lp = getattr(self.actor, '_last_log_prob', None)
-                self._expected_obs_dim = len(combined)
+                act = int(pol.act(np.asarray(combined, dtype=np.float32)))
+                lp = getattr(pol, '_last_log_prob', None)
                 return act, lp
             except Exception as e:
-                print(f"[CLIENT {self.device_id}] actor inference error: {e}")
+                print(f"[CLIENT {self.device_id}] actor inference error agent={agent_id}: {e}", flush=True)
+
+        # Fallback: if a single shared actor exists (legacy path)
+        if self.actor is not None:
+            try:
+                act = int(self.actor.act(np.asarray(combined, dtype=np.float32)))
+                lp = getattr(self.actor, '_last_log_prob', None)
+                return act, lp
+            except Exception:
+                pass
+
         if action_dim and action_dim > 0:
             return random.randrange(0, int(action_dim)), None
         return random.randrange(0, 5), None
@@ -460,7 +725,7 @@ class EdgeClient:
     def _infer_actor_dims(self, actor_dir: str):
         """Infer observation and action dimensions from actor.pt state dict without needing env spaces.
         Returns (obs_dim, action_dim). Falls back to heuristics if direct keys not found."""
-        if torch is None:
+        if _try_import_torch(self.device_id) is None:
             raise RuntimeError("Torch unavailable for dimension inference")
         state_path = Path(actor_dir) / 'actor.pt'
         if not state_path.exists():
@@ -501,11 +766,40 @@ if __name__ == '__main__':
     ap.add_argument('--device-id', required=True)
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=1883)
+    ap.add_argument('--mqtt-auth', action='store_true', default=False, help='Enable MQTT username/password auth')
+    ap.add_argument('--mqtt-username', default='admin')
+    ap.add_argument('--mqtt-password', default='mailstrup123456')
     ap.add_argument('--rul-model', default='')
     ap.add_argument('--actor-model', default='')
     ap.add_argument('--actor-dir', default='')
     ap.add_argument('--fresh-actor', action='store_true', help='Start training with a freshly initialized actor (ignore any actor.pt)')
+    ap.add_argument('--topic-prefix', default='demo', help='MQTT topic prefix, e.g. demo or gcp')
+    ap.add_argument('--tf-model-dir', default=None, help='Keras SavedModel directory for RUL predictor (default: models/model). Use empty string to disable TF loading.')
     args = ap.parse_args()
 
-    client = EdgeClient(args.device_id, args.host, args.port, args.rul_model, args.actor_model, args.actor_dir, fresh_actor=args.fresh_actor)
+    # Default TF model dir is repo-relative models/model if available
+    tf_dir = args.tf_model_dir
+    if tf_dir is None:
+        try:
+            _root = Path(__file__).resolve().parents[2]
+            cand = _root / 'models' / 'model'
+            if cand.exists():
+                tf_dir = str(cand)
+        except Exception:
+            tf_dir = ''
+
+    client = EdgeClient(
+        args.device_id,
+        args.host,
+        args.port,
+        args.rul_model,
+        args.actor_model,
+        args.actor_dir,
+        fresh_actor=args.fresh_actor,
+        topic_prefix=args.topic_prefix,
+        tf_model_dir=tf_dir,
+        mqtt_auth=bool(args.mqtt_auth),
+        mqtt_username=str(args.mqtt_username),
+        mqtt_password=str(args.mqtt_password),
+    )
     client.start()
