@@ -10,13 +10,15 @@ HOST="127.0.0.1"
 PORT="1883"
 PREFIX="gcp"
 NUM_AGENTS="4"
-MAX_STEPS="800"
+EPISODE_LENGTH="${EPISODE_LENGTH:-200}"
+NUM_EPISODES="${NUM_EPISODES:-2}"
 RUL_THRESHOLD="7"
 EXP_TYPE="transformer_s_t7"
 DEVICES=(edge-00 edge-01 edge-02 edge-03)
 
 # Disable TF loading on edges for fast smoke tests. Set to a SavedModel dir to enable.
 TF_MODEL_DIR="${TF_MODEL_DIR:-}"
+DEBUG_RUL="${DEBUG_RUL:-}"
 
 LOG_DIR="/tmp"
 SERVER_LOG="$LOG_DIR/gcp_server.log"
@@ -55,17 +57,18 @@ for dev in "${DEVICES[@]}"; do
   start_client "$dev"
 done
 
-echo "[TEST] clients started; running server (steps=$MAX_STEPS)"
+echo "[TEST] clients started; running server (episodes=$NUM_EPISODES, episode_length=$EPISODE_LENGTH)"
 
 "$PY" -u scripts/gcp/run_gcp_server_mqtt.py \
   --host "$HOST" --port "$PORT" \
   --topic-prefix "$PREFIX" \
   --num-agents "$NUM_AGENTS" \
-  --max-steps "$MAX_STEPS" \
-  --episode-length "$MAX_STEPS" \
+  --num-episodes "$NUM_EPISODES" \
+  --episode-length "$EPISODE_LENGTH" \
   --rul-threshold "$RUL_THRESHOLD" \
   --exp-type "$EXP_TYPE" \
   --devices "$(IFS=,; echo "${DEVICES[*]}")" \
+  ${DEBUG_RUL:+--debug-rul} \
   >"$SERVER_LOG" 2>&1
 
 echo "[TEST] server finished ok"

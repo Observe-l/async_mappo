@@ -2,9 +2,9 @@
 """
 Simple IoT edge client for SUMO-RL demo.
 
-- Subscribes to demo/obs/{device_id}
+ - Subscribes to demo/{device_id}/obs
 - Performs dummy inference (random) or loads TorchScript models if provided
-- Publishes results to demo/act/{device_id}
+ - Publishes results to demo/{device_id}/act
 
 Usage:
   python3 scripts/iot/edge_client.py --device-id edge-01 [--host 127.0.0.1 --port 1883]
@@ -253,6 +253,8 @@ class EdgeClient:
         # Keep a per-agent history of sensor feature vectors for TF predictor.
         # Local predictor expects a list of length >= lookback_window, where each element is a 2D array.
         self._rul_hist = {}  # type: ignore[var-annotated]
+        # Debug info for last RUL computation per agent_id.
+        self._rul_debug = {}  # type: ignore[var-annotated]
         try:
             self._rul_lw = int(getattr(self.rul_predictor, 'lw', 40)) if self.rul_predictor is not None else 40
         except Exception:
@@ -301,14 +303,14 @@ class EdgeClient:
         self.client.loop_forever()
 
     def on_connect(self, client, userdata, flags, rc):
-        topic_obs = f"{self.topic_prefix}/obs/{self.device_id}"
-        topic_train = f"{self.topic_prefix}/train/{self.device_id}"
+        topic_obs = f"{self.topic_prefix}/{self.device_id}/obs"
+        topic_train = f"{self.topic_prefix}/{self.device_id}/train"
         client.subscribe(topic_obs, qos=1)
         client.subscribe(topic_train, qos=1)
         print(f"[CLIENT {self.device_id}] connected rc={rc}, subscribed {topic_obs} & {topic_train}", flush=True)
 
     def on_message(self, client, userdata, msg):
-        is_train = msg.topic.startswith(f"{self.topic_prefix}/train/")
+        is_train = msg.topic == f"{self.topic_prefix}/{self.device_id}/train"
         try:
             payload = json.loads(msg.payload.decode('utf-8'))
         except Exception:
@@ -384,8 +386,9 @@ class EdgeClient:
             'inference_ms': float((t2 - t0) * 1000.0),
             'device_id': self.device_id,
             'decision_type': decision_type,
+            'rul_debug': self._rul_debug.get(str(agent_id)) if agent_id is not None else None,
         }
-        client.publish(f"{self.topic_prefix}/act/{self.device_id}", json.dumps(reply), qos=1, retain=False)
+        client.publish(f"{self.topic_prefix}/{self.device_id}/act", json.dumps(reply), qos=1, retain=False)
         try:
             if decision_type == 'pickup':
                 print(f"[CLIENT {self.device_id}] send PICKUP step={step_id} agent={agent_id} seq={seq} action={int(action)} -> pick up goods at Factory{int(action)} rul={float(rul):.2f}", flush=True)
@@ -624,6 +627,12 @@ class EdgeClient:
         print(f"[CLIENT {self.device_id}] actor batch update #{self.train_steps} steps={T} loss={loss_total.item():.4f} pg={loss_pg.item():.4f} ent={entropy.item():.4f}")
 
     def infer_rul(self, agent_id: str, sensor_vec):
+        dbg = {
+            'source': 'default',
+            'lw': int(self._rul_lw) if hasattr(self, '_rul_lw') else None,
+            'hist_len': None,
+            'fallback_125': True,
+        }
         # TorchScript model path provided
         if self.gcpatr is not None:
             try:
@@ -632,7 +641,11 @@ class EdgeClient:
                 with torch.no_grad():
                     y = self.gcpatr(x)
                 v = float(y.view(-1)[0].item())
-                return float(np.clip(v, 0.0, 125.0))
+                v2 = float(np.clip(v, 0.0, 125.0))
+                dbg.update({'source': 'torchscript', 'hist_len': 1, 'fallback_125': False})
+                if agent_id:
+                    self._rul_debug[str(agent_id)] = dbg
+                return v2
             except Exception:
                 pass
         # Fallback to TF predictor if available.
@@ -659,13 +672,27 @@ class EdgeClient:
                     hist = self._rul_hist.get(str(agent_id))
 
                 if hist is None:
+                    if agent_id:
+                        self._rul_debug[str(agent_id)] = dbg
                     return 125.0
 
+                try:
+                    dbg['hist_len'] = int(len(hist))
+                except Exception:
+                    dbg['hist_len'] = None
+
                 v = float(self.rul_predictor.predict(hist))
-                return float(np.clip(v, 0.0, 125.0))
+                v2 = float(np.clip(v, 0.0, 125.0))
+                # The TF predictor itself returns 125.0 when len(hist) < lookback_window.
+                dbg.update({'source': 'tf', 'fallback_125': bool(abs(v2 - 125.0) < 1e-6 and (dbg.get('hist_len') or 0) < int(dbg.get('lw') or 0))})
+                if agent_id:
+                    self._rul_debug[str(agent_id)] = dbg
+                return v2
             except Exception:
                 pass
         # Match local-training default when predictor not ready/available.
+        if agent_id:
+            self._rul_debug[str(agent_id)] = dbg
         return 125.0
 
     def infer_action(self, agent_id: str, env_vec, rul, action_dim: int = 0):

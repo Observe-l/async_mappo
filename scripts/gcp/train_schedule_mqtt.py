@@ -46,10 +46,10 @@ def _build_namespaced_bridge(topic_prefix: str, host: str, port: int, timeout_ms
             super().__init__(cfg)
 
         def _topic_obs(self, device_id: str) -> str:
-            return f"{self._topic_prefix}/obs/{device_id}"
+            return f"{self._topic_prefix}/{device_id}/obs"
 
         def _topic_act(self, device_id: str) -> str:
-            return f"{self._topic_prefix}/act/{device_id}"
+            return f"{self._topic_prefix}/{device_id}/act"
 
         def _on_connect(self, client, userdata, flags, rc):
             for dev in self.cfg.devices:

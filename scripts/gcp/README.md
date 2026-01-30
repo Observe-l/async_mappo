@@ -20,16 +20,16 @@ Topics are **namespaced** (default prefix `gcp`) to avoid colliding with the exi
 Start 4 edge clients (on any machines):
 
 ```bash
-python3 scripts/iot/edge_client.py --device-id edge-00 --host <BROKER_IP> --port 1883 --topic-prefix gcp
-python3 scripts/iot/edge_client.py --device-id edge-01 --host <BROKER_IP> --port 1883 --topic-prefix gcp
-python3 scripts/iot/edge_client.py --device-id edge-02 --host <BROKER_IP> --port 1883 --topic-prefix gcp
-python3 scripts/iot/edge_client.py --device-id edge-03 --host <BROKER_IP> --port 1883 --topic-prefix gcp
+python3 scripts/iot/edge_client.py --device-id edge-00 --host 34.142.210.116 --port 1883 --topic-prefix gcp --mqtt-auth --mqtt-username admin --mqtt-password mailstrup123456
+python3 scripts/iot/edge_client.py --device-id edge-01 --host 34.142.210.116 --port 1883 --topic-prefix gcp --mqtt-auth --mqtt-username admin --mqtt-password mailstrup123456
+python3 scripts/iot/edge_client.py --device-id edge-02 --host 34.142.210.116 --port 1883 --topic-prefix gcp --mqtt-auth --mqtt-username admin --mqtt-password mailstrup123456
+python3 scripts/iot/edge_client.py --device-id edge-03 --host 34.142.210.116 --port 1883 --topic-prefix gcp --mqtt-auth --mqtt-username admin --mqtt-password mailstrup123456
 ```
 
 Then start server (on broker machine or any machine):
 
 ```bash
-python3 scripts/gcp/run_gcp_server_mqtt.py --host <BROKER_IP> --port 1883 --topic-prefix gcp --num-agents 4 --max-steps 200
+python3 scripts/gcp/run_gcp_server_mqtt.py --host 34.142.210.116 --port 1883 --topic-prefix gcp --num-agents 4 --num-episodes 5000 --episode-length 1000 --mqtt-auth --mqtt-username admin --mqtt-password mailstrup123456
 ```
 
 ## MQTT username/password (for deployment)

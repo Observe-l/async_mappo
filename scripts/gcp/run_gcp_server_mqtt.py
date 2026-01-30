@@ -54,13 +54,13 @@ class NamespacedBridge(MqttBridge):
         super().__init__(cfg)
 
     def _topic_obs(self, device_id: str) -> str:
-        return f"{self._topic_prefix}/obs/{device_id}"
+        return f"{self._topic_prefix}/{device_id}/obs"
 
     def _topic_act(self, device_id: str) -> str:
-        return f"{self._topic_prefix}/act/{device_id}"
+        return f"{self._topic_prefix}/{device_id}/act"
 
     def _topic_train(self, device_id: str) -> str:
-        return f"{self._topic_prefix}/train/{device_id}"
+        return f"{self._topic_prefix}/{device_id}/train"
 
     # Override callbacks and publish functions to use namespaced topics
     def _on_connect(self, client, userdata, flags, rc):
@@ -156,6 +156,17 @@ class NamespacedBridge(MqttBridge):
         except Exception:
             rul, action, log_prob, dev_id = self.default_rul(), None, None, device_id
 
+        # Optional debug: surface edge-side predictor status when diagnosing stuck RUL.
+        try:
+            if getattr(self, "_debug_rul", False) and decision_type == "rul":
+                dbg = res.get("rul_debug", None)
+                print(
+                    f"[SERVER][RUL_DEBUG] step={step_id} agent={agent_id} seq={seq} from={dev_id} rul={rul} dbg={dbg}",
+                    flush=True,
+                )
+        except Exception:
+            pass
+
         return (rul, action, log_prob, True, dev_id)
 
     def publish_train(self, device_id: str, payload: dict):
@@ -202,17 +213,19 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=1883)
     ap.add_argument("--topic-prefix", default="gcp")
-    ap.add_argument("--timeout-ms", type=int, default=300)
+    ap.add_argument("--timeout-ms", type=int, default=3000)
     ap.add_argument("--mqtt-auth", action="store_true", default=False, help="Enable MQTT username/password auth")
     ap.add_argument("--mqtt-username", default="admin")
     ap.add_argument("--mqtt-password", default="mailstrup123456")
     ap.add_argument("--num-agents", type=int, default=4)
-    ap.add_argument("--max-steps", type=int, default=200)
-    ap.add_argument("--episode-length", type=int, default=32)
+    ap.add_argument("--episode-length", type=int, default=10000)
+    ap.add_argument("--num-episodes", type=int, default=5000, help="Train for this many episodes (default: 5000)")
+    ap.add_argument("--max-steps", type=int, default=None, help="Optional hard cap on total env steps (overrides num-episodes * episode-length)")
     ap.add_argument("--use-rul-agent", action="store_true", default=True)
     ap.add_argument("--rul-threshold", type=float, default=7.0)
     ap.add_argument("--exp-type", default="gcp_mqtt")
     ap.add_argument("--devices", default="edge-00,edge-01,edge-02,edge-03")
+    ap.add_argument("--debug-rul", action="store_true", default=False, help="Print edge-provided RUL debug metadata")
     args = ap.parse_args()
 
     # Server env: same logic as train_schedule.py but using gcp env (no local predictor)
@@ -237,6 +250,11 @@ def main():
         password=str(args.mqtt_password),
     )
     bridge = NamespacedBridge(bridge_cfg, topic_prefix=str(args.topic_prefix))
+    # Enable extra debug prints inside the bridge if requested.
+    try:
+        bridge._debug_rul = bool(args.debug_rul)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     last_rul: Dict[int, float] = {}
     rul_req_counter = [0]
@@ -298,16 +316,17 @@ def main():
         returns = [float(adv[i]) + float(vals[i]) for i in range(T)]
         return adv, returns
 
+    total_steps_cap = int(args.max_steps) if args.max_steps is not None else int(args.num_episodes) * int(args.episode_length)
     print(
         f"[SERVER] started host={args.host}:{args.port} prefix={args.topic_prefix} agents={env.truck_num} action_dim={action_dim} "
-        f"episode_length={int(args.episode_length)} total_steps={int(args.max_steps)}"
+        f"episode_length={int(args.episode_length)} num_episodes={int(args.num_episodes)} total_steps_cap={int(total_steps_cap)}"
     )
 
     global_step = 0
     episode_step = 0
     episode_idx = 0
 
-    while global_step < int(args.max_steps):
+    while episode_idx < int(args.num_episodes) and global_step < int(total_steps_cap):
         step_id = int(global_step)
 
         actions: Dict[int, int] = {}
@@ -440,6 +459,9 @@ def main():
                 traj[aid] = {"obs": [], "actions": [], "log_probs": [], "rewards": [], "dones": [], "values": [], "next_values": []}
             obs = env.reset()
             episode_step = 0
+
+            if episode_idx >= int(args.num_episodes):
+                break
 
         time.sleep(0.005)
 
